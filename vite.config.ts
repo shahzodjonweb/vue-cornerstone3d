@@ -25,7 +25,7 @@ import { viteCommonjs } from "@originjs/vite-plugin-commonjs"
  * ```ts
  * optimizeDeps: {
  *   exclude: [
- *     "@cornerstonejs/codec-new-decoder",
+ *     "@cornerstonejs/dicom-image-loader",
  *     // ... existing codecs
  *   ]
  * }
@@ -43,6 +43,11 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  // server: {
+  //   fs: {
+  //     strict: false,
+  //   },
+  // },
   // seems like only required in dev mode
   optimizeDeps: {
     exclude: ["@cornerstonejs/dicom-image-loader"],
