@@ -9,12 +9,29 @@ import {
 } from "@cornerstonejs/core"
 import { init as csRenderInit, cache } from '@cornerstonejs/core';
 import { init as csToolsInit } from '@cornerstonejs/tools';
-import { init as dicomImageLoaderInit } from '@cornerstonejs/dicom-image-loader';
+import { init as dicomImageLoaderInit,  } from '@cornerstonejs/dicom-image-loader';
+import wadors from '@cornerstonejs/dicom-image-loader/wadors';
 import { api } from 'dicomweb-client';
-import cornerstoneDICOMImageLoader from '@cornerstonejs/dicom-image-loader';
 
-// Register volume loader
-volumeLoader.registerUnknownVolumeLoader(cornerstoneStreamingImageVolumeLoader)
+// Add interface for function parameters
+interface ImageMetadataParams {
+  StudyInstanceUID: string;
+  SeriesInstanceUID: string;
+  SOPInstanceUID?: string | null;
+  wadoRsRoot: string;
+  client?: api.DICOMwebClient | null;
+}
+
+// Add type definitions
+type InstanceMetadata = {
+  [key: string]: {
+    Value: string[];
+  };
+};
+
+type WADORSMetaData = {
+  [key: string]: any;
+};
 
 // Create refs
 const elementRef = ref<HTMLDivElement | null>(null)
@@ -26,7 +43,7 @@ async function createImageIdsAndCacheMetaData({
   SOPInstanceUID = null,
   wadoRsRoot,
   client = null,
-}) {
+}: ImageMetadataParams) {
   const SOP_INSTANCE_UID = "00080018"
   const SERIES_INSTANCE_UID = "0020000E"
 
@@ -35,37 +52,42 @@ async function createImageIdsAndCacheMetaData({
     seriesInstanceUID: SeriesInstanceUID,
   }
 
-  client =
-    client ||
-    new api.DICOMwebClient({ url: wadoRsRoot as string, singlepart: true })
-  const instances = await client.retrieveSeriesMetadata(studySearchOptions)
-  const imageIds = instances.map((instanceMetaData) => {
-    const SeriesInstanceUID = instanceMetaData[SERIES_INSTANCE_UID].Value[0]
-    const SOPInstanceUIDToUse =
-      SOPInstanceUID || instanceMetaData[SOP_INSTANCE_UID].Value[0]
+  const dicomClient: api.DICOMwebClient = 
+    client ?? 
+    new api.DICOMwebClient({ url: wadoRsRoot, singlepart: true });
+    
+  const instances = await dicomClient.retrieveSeriesMetadata(studySearchOptions);
+  const imageIds = instances.map((instanceMetaData: any) => {
+    const seriesUID = instanceMetaData[SERIES_INSTANCE_UID]?.Value?.[0]
+    if (!seriesUID) {
+      throw new Error('Series Instance UID not found in metadata')
+    }
+
+    const sopUID = instanceMetaData[SOP_INSTANCE_UID]?.Value?.[0]
+    if (!sopUID && !SOPInstanceUID) {
+      throw new Error('SOP Instance UID not found in metadata')
+    }
+
+    const SOPInstanceUIDToUse = SOPInstanceUID || sopUID
 
     const prefix = "wadors:"
-
     const imageId =
       prefix +
       wadoRsRoot +
       "/studies/" +
       StudyInstanceUID +
       "/series/" +
-      SeriesInstanceUID +
+      seriesUID +
       "/instances/" +
       SOPInstanceUIDToUse +
       "/frames/1"
 
-    cornerstoneDICOMImageLoader.wadors.metaDataManager.add(
+    wadors.metaDataManager.add(
       imageId,
-      instanceMetaData
+      instanceMetaData as WADORSMetaData
     )
     return imageId
   })
-
-  // we don't want to add non-pet
-  // Note: for 99% of scanners SUV calculation is consistent bw slices
 
   return imageIds
 }
@@ -78,7 +100,7 @@ const setup = async () => {
   running.value = true
   await csRenderInit()
   await csToolsInit()
-  dicomImageLoaderInit({ maxWebWorkers: 1 })
+  dicomImageLoaderInit({ maxWebWorkers: 1})
 
   // Get Cornerstone imageIds and fetch metadata into RAM
   const imageIds = await createImageIdsAndCacheMetaData({
@@ -97,7 +119,7 @@ const setup = async () => {
   const viewportInput = {
     viewportId,
     type: Enums.ViewportType.ORTHOGRAPHIC,
-    element: elementRef.value,
+    element: elementRef.value as HTMLDivElement,
     defaultOptions: {
       orientation: Enums.OrientationAxis.SAGITTAL,
     },

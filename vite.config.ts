@@ -53,4 +53,10 @@ export default defineConfig({
     exclude: ["@cornerstonejs/dicom-image-loader"],
     include: ["dicom-parser"],
   },
+  worker: {
+    format: "es",
+    rollupOptions: {
+      external: ["@icr/polyseg-wasm"],
+    },
+  },
 })
