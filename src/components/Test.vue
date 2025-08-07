@@ -8,13 +8,6 @@
     <div ref="elementRefSagittal" class="viewport" />
     <div ref="elementRefCoronal" class="viewport" />
   </div>
-  <ContourViewer
-    v-if="volumeId && segmentationId && toolGroupId && viewportIds.length > 0"
-    :volume-id="volumeId"
-    :segmentation-id="segmentationId"
-    :tool-group-id="toolGroupId"
-    :viewport-ids="viewportIds"
-  />
 </template>
 
 <script setup lang="ts">
@@ -37,23 +30,25 @@ import {
   addTool,
   BrushTool,
   segmentation,
-  utilities,
 } from "@cornerstonejs/tools";
 import { api } from "dicomweb-client";
 import wadors from "@cornerstonejs/dicom-image-loader/wadors";
-import ContourViewer from "./ContourViewer.vue";
+import {
+  saveSegmentationToIndexedDB,
+  getSegmentationFromIndexedDB,
+} from "../segmentationStorage";
+import cv from "@techstark/opencv-js";
 
-// Local storage key
 const STORAGE_KEY = "mySegmentationData";
+const CONTOURS_STORAGE_KEY = "savedContours";
+let cvReady: any = null;
+let savedContours = ref<any[]>([]);
 
 const elementRefAxial = ref<HTMLDivElement | null>(null);
 const elementRefSagittal = ref<HTMLDivElement | null>(null);
 const elementRefCoronal = ref<HTMLDivElement | null>(null);
 const running = ref(false);
-const volumeId = ref<string>("");
-const toolGroupId = ref<string>("");
-const viewportIds = ref<string[]>([]);
-let segmentationId = `MY_SEGMENTATION_ID`;
+let segmentationId = "MY_SEGMENTATION_ID";
 const StudyInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463";
 const SeriesInstanceUID =
@@ -86,6 +81,7 @@ async function createImageIdsAndCacheMetaData() {
 
 let renderingEngine: RenderingEngine;
 let toolGroup: any;
+let volumeId: string;
 let viewportIdAxial = "CT_AXIAL";
 let viewportIdSagittal = "CT_SAGITTAL";
 let viewportIdCoronal = "CT_CORONAL";
@@ -105,11 +101,6 @@ const setupViewer = async () => {
 
   await csCoreInit();
   await dicomImageLoaderInit();
-
-  // Initialize polyseg for contour conversion
-  const polyseg = await import("@cornerstonejs/polymorphic-segmentation");
-  await polyseg.init();
-
   await csToolsInit();
 
   const imageIds = await createImageIdsAndCacheMetaData();
@@ -138,14 +129,20 @@ const setupViewer = async () => {
     },
   ]);
 
-  volumeId.value = "CT_VOLUME_ID";
-  const volume = await volumeLoader.createAndCacheVolume(volumeId.value, {
+  volumeId = "CT_VOLUME_ID";
+  const volume = await volumeLoader.createAndCacheVolume(volumeId, {
     imageIds,
+  });
+  volumeLoader.registerUnknownVolumeLoader((volumeId) => {
+    const volume = cache.getVolume(volumeId);
+    if (!volume) {
+      throw new Error(`Volume not found in cache: ${volumeId}`);
+    }
+    return Promise.resolve(volume);
   });
   await volume.load();
 
-  // Create an initial empty segmentation volume
-  await volumeLoader.createAndCacheDerivedLabelmapVolume(volumeId.value, {
+  await volumeLoader.createAndCacheDerivedLabelmapVolume(volumeId, {
     volumeId: segmentationId,
   });
 
@@ -158,15 +155,10 @@ const setupViewer = async () => {
       },
     },
   ]);
-  // const _value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "");
-
-  // segmentation.state.removeSegmentation(segmentationId);
-  // console.log(_value);
-  // await segmentation.addSegmentations(_value);
 
   addTool(BrushTool);
-  toolGroupId.value = "CT_TOOLGROUP";
-  toolGroup = ToolGroupManager.createToolGroup(toolGroupId.value);
+  const toolGroupId = "CT_TOOLGROUP";
+  toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
   toolGroup.addTool(BrushTool.toolName);
   toolGroup.setToolActive(BrushTool.toolName, {
     bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
@@ -176,65 +168,28 @@ const setupViewer = async () => {
   toolGroup.addViewport(viewportIdSagittal, renderingEngineId);
   toolGroup.addViewport(viewportIdCoronal, renderingEngineId);
 
-  viewportIds.value = [viewportIdAxial, viewportIdSagittal, viewportIdCoronal];
-
   await setVolumesForViewports(
     renderingEngine,
-    [{ volumeId: volumeId.value }],
+    [{ volumeId }],
     [viewportIdAxial, viewportIdSagittal, viewportIdCoronal]
   );
 
-  // Add labelmap representation using the new API
-  await segmentation.addSegmentationRepresentations(toolGroupId.value, [
-    {
-      segmentationId,
-      type: csToolsEnums.SegmentationRepresentations.Labelmap,
-    },
-  ]);
-
-  renderingEngine.render();
-};
-
-const toSave = async () => {};
-
-const restoreSegmentation = async () => {
-  const savedJson = localStorage.getItem("savedSegmentation");
-
-  if (!savedJson) {
-    console.warn("No segmentation data found in localStorage");
-    return;
-  }
-
-  const parsed = JSON.parse(savedJson);
-
-  // ✅ Normalizatsiya: `representation` field qo‘shamiz
-  const restoredSegmentation = {
-    segmentationId: parsed.segmentationId,
-    representation: {
-      type: csToolsEnums.SegmentationRepresentations.Labelmap,
-      data: parsed.representationData.Labelmap,
-    },
-    segments: parsed.segments,
-  };
-  console.log(restoredSegmentation);
-
-  await segmentation.addSegmentations([restoredSegmentation]);
   await segmentation.addLabelmapRepresentationToViewportMap({
     [viewportIdAxial]: [
       {
-        segmentationId: restoredSegmentation.segmentationId,
+        segmentationId,
         type: csToolsEnums.SegmentationRepresentations.Labelmap,
       },
     ],
     [viewportIdSagittal]: [
       {
-        segmentationId: restoredSegmentation.segmentationId,
+        segmentationId,
         type: csToolsEnums.SegmentationRepresentations.Labelmap,
       },
     ],
     [viewportIdCoronal]: [
       {
-        segmentationId: restoredSegmentation.segmentationId,
+        segmentationId,
         type: csToolsEnums.SegmentationRepresentations.Labelmap,
       },
     ],
@@ -243,10 +198,29 @@ const restoreSegmentation = async () => {
   renderingEngine.render();
 };
 
+const restoreSegmentation = async () => {
+  const savedData = localStorage.getItem("mySegmentation");
+  if (!savedData) {
+    console.warn("Segmentatsiya topilmadi!");
+    return;
+  }
+  console.log(JSON.parse(savedData));
+};
+
+const toSave = async () => {
+  if (!cvReady) {
+    console.error("OpenCV hali yuklanmagan!");
+    return;
+  }
+  const seg = segmentation.state.getSegmentation(segmentationId);
+  console.log(seg);
+};
+
 onMounted(async () => {
   await setupViewer();
-  // restoreSegmentation();
+  cvReady = await cv;
 });
+
 onUnmounted(() => {
   if (renderingEngine) {
     renderingEngine.destroy();

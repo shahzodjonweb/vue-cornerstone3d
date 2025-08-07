@@ -1,8 +1,10 @@
-import { fileURLToPath, URL } from "node:url"
-import { defineConfig } from "vite"
-import vue from "@vitejs/plugin-vue"
-import vueJsx from "@vitejs/plugin-vue-jsx"
-import { viteCommonjs } from "@originjs/vite-plugin-commonjs"
+import { fileURLToPath, URL } from "node:url";
+import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+import vueJsx from "@vitejs/plugin-vue-jsx";
+import { viteCommonjs } from "@originjs/vite-plugin-commonjs";
+import wasm from "vite-plugin-wasm";
+import topLevelAwait from "vite-plugin-top-level-await";
 
 /**
  * Vite configuration for the application.
@@ -37,12 +39,16 @@ export default defineConfig({
     vueJsx(),
     // for dicom-parser
     viteCommonjs(),
+    // for WASM support
+    wasm(),
+    topLevelAwait(),
   ],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  assetsInclude: ["**/*.wasm"],
   // server: {
   //   fs: {
   //     strict: false,
@@ -50,13 +56,21 @@ export default defineConfig({
   // },
   // seems like only required in dev mode
   optimizeDeps: {
-    exclude: ["@cornerstonejs/dicom-image-loader"],
+    exclude: [
+      "@cornerstonejs/dicom-image-loader",
+      "@cornerstonejs/polymorphic-segmentation",
+      "@icr/polyseg-wasm",
+    ],
     include: ["dicom-parser"],
+  },
+  build: {
+    target: "esnext",
   },
   worker: {
     format: "es",
-    rollupOptions: {
-      external: ["@icr/polyseg-wasm"],
-    },
   },
-})
+  server: {
+    host: true,
+    port: 3000,
+  },
+});

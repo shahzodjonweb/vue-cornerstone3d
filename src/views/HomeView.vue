@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import Viewport from '../components/Viewport.vue'
+import StacktoCounter from "../components/Test.vue";
 </script>
 
 <template>
   <main>
-    <Viewport />
+    <StacktoCounter />
   </main>
 </template>

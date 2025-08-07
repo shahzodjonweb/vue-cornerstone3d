@@ -8,13 +8,6 @@
     <div ref="elementRefSagittal" class="viewport" />
     <div ref="elementRefCoronal" class="viewport" />
   </div>
-  <ContourViewer
-    v-if="volumeId && segmentationId && toolGroupId && viewportIds.length > 0"
-    :volume-id="volumeId"
-    :segmentation-id="segmentationId"
-    :tool-group-id="toolGroupId"
-    :viewport-ids="viewportIds"
-  />
 </template>
 
 <script setup lang="ts">
@@ -26,7 +19,6 @@ import {
   setVolumesForViewports,
   cache,
   metaData,
-  geometryLoader,
 } from "@cornerstonejs/core";
 import { init as csCoreInit } from "@cornerstonejs/core";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
@@ -37,11 +29,10 @@ import {
   addTool,
   BrushTool,
   segmentation,
-  utilities,
 } from "@cornerstonejs/tools";
 import { api } from "dicomweb-client";
 import wadors from "@cornerstonejs/dicom-image-loader/wadors";
-import ContourViewer from "./ContourViewer.vue";
+import { v4 as uuidv4 } from "uuid";
 
 // Local storage key
 const STORAGE_KEY = "mySegmentationData";
@@ -50,10 +41,7 @@ const elementRefAxial = ref<HTMLDivElement | null>(null);
 const elementRefSagittal = ref<HTMLDivElement | null>(null);
 const elementRefCoronal = ref<HTMLDivElement | null>(null);
 const running = ref(false);
-const volumeId = ref<string>("");
-const toolGroupId = ref<string>("");
-const viewportIds = ref<string[]>([]);
-let segmentationId = `MY_SEGMENTATION_ID`;
+let segmentationId = "MY_SEGMENTATION_ID";
 const StudyInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463";
 const SeriesInstanceUID =
@@ -86,6 +74,7 @@ async function createImageIdsAndCacheMetaData() {
 
 let renderingEngine: RenderingEngine;
 let toolGroup: any;
+let volumeId: string;
 let viewportIdAxial = "CT_AXIAL";
 let viewportIdSagittal = "CT_SAGITTAL";
 let viewportIdCoronal = "CT_CORONAL";
@@ -105,11 +94,6 @@ const setupViewer = async () => {
 
   await csCoreInit();
   await dicomImageLoaderInit();
-
-  // Initialize polyseg for contour conversion
-  const polyseg = await import("@cornerstonejs/polymorphic-segmentation");
-  await polyseg.init();
-
   await csToolsInit();
 
   const imageIds = await createImageIdsAndCacheMetaData();
@@ -138,14 +122,14 @@ const setupViewer = async () => {
     },
   ]);
 
-  volumeId.value = "CT_VOLUME_ID";
-  const volume = await volumeLoader.createAndCacheVolume(volumeId.value, {
+  volumeId = "CT_VOLUME_ID";
+  const volume = await volumeLoader.createAndCacheVolume(volumeId, {
     imageIds,
   });
   await volume.load();
 
   // Create an initial empty segmentation volume
-  await volumeLoader.createAndCacheDerivedLabelmapVolume(volumeId.value, {
+  await volumeLoader.createAndCacheDerivedLabelmapVolume(volumeId, {
     volumeId: segmentationId,
   });
 
@@ -165,8 +149,8 @@ const setupViewer = async () => {
   // await segmentation.addSegmentations(_value);
 
   addTool(BrushTool);
-  toolGroupId.value = "CT_TOOLGROUP";
-  toolGroup = ToolGroupManager.createToolGroup(toolGroupId.value);
+  const toolGroupId = "CT_TOOLGROUP";
+  toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
   toolGroup.addTool(BrushTool.toolName);
   toolGroup.setToolActive(BrushTool.toolName, {
     bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
@@ -176,71 +160,147 @@ const setupViewer = async () => {
   toolGroup.addViewport(viewportIdSagittal, renderingEngineId);
   toolGroup.addViewport(viewportIdCoronal, renderingEngineId);
 
-  viewportIds.value = [viewportIdAxial, viewportIdSagittal, viewportIdCoronal];
-
   await setVolumesForViewports(
     renderingEngine,
-    [{ volumeId: volumeId.value }],
+    [{ volumeId }],
     [viewportIdAxial, viewportIdSagittal, viewportIdCoronal]
   );
 
-  // Add labelmap representation using the new API
-  await segmentation.addSegmentationRepresentations(toolGroupId.value, [
-    {
-      segmentationId,
-      type: csToolsEnums.SegmentationRepresentations.Labelmap,
-    },
-  ]);
-
-  renderingEngine.render();
-};
-
-const toSave = async () => {};
-
-const restoreSegmentation = async () => {
-  const savedJson = localStorage.getItem("savedSegmentation");
-
-  if (!savedJson) {
-    console.warn("No segmentation data found in localStorage");
-    return;
-  }
-
-  const parsed = JSON.parse(savedJson);
-
-  // ✅ Normalizatsiya: `representation` field qo‘shamiz
-  const restoredSegmentation = {
-    segmentationId: parsed.segmentationId,
-    representation: {
-      type: csToolsEnums.SegmentationRepresentations.Labelmap,
-      data: parsed.representationData.Labelmap,
-    },
-    segments: parsed.segments,
-  };
-  console.log(restoredSegmentation);
-
-  await segmentation.addSegmentations([restoredSegmentation]);
   await segmentation.addLabelmapRepresentationToViewportMap({
     [viewportIdAxial]: [
       {
-        segmentationId: restoredSegmentation.segmentationId,
+        segmentationId,
         type: csToolsEnums.SegmentationRepresentations.Labelmap,
       },
     ],
     [viewportIdSagittal]: [
       {
-        segmentationId: restoredSegmentation.segmentationId,
+        segmentationId,
         type: csToolsEnums.SegmentationRepresentations.Labelmap,
       },
     ],
     [viewportIdCoronal]: [
       {
-        segmentationId: restoredSegmentation.segmentationId,
+        segmentationId,
         type: csToolsEnums.SegmentationRepresentations.Labelmap,
       },
     ],
   });
 
   renderingEngine.render();
+};
+
+function uint8ArrayToBase64(u8Arr: Uint8Array): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([u8Arr]);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+function uint8ArrayToBase64(u8Arr: Uint8Array): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([u8Arr]);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+const toSave = async () => {
+  const segmentations = segmentation.state.getSegmentations();
+  const segmentationInfo = segmentations[0];
+  const segmentationId = segmentationInfo.segmentationId;
+  const segVolume = cache.getVolume(segmentationId);
+  const scalarData = segVolume.voxelManager.getCompleteScalarDataArray();
+  const dataToStore = {
+    segmentationId,
+    representationData: segmentationInfo.representationData,
+    segments: segmentationInfo.representationData.Labelmap.segments,
+    imageIds: segmentationInfo.representationData.Labelmap.imageIds,
+    scalarData: Array.from(scalarData),
+    volumeMetadata: {
+      dimensions: segVolume.dimensions,
+      spacing: segVolume.spacing,
+      origin: segVolume.origin,
+      direction: segVolume.direction,
+    },
+  };
+  localStorage.setItem("savedSegmentation", JSON.stringify(dataToStore));
+  console.log(localStorage.getItem("savedSegmentation"));
+  // localStorage.setItem("savedSegmentation", JSON.stringify(dataToStore));
+};
+
+const restoreSegmentation = async () => {
+  const saved = localStorage.getItem("savedSegmentation");
+  if (!saved) {
+    console.warn("⛔ Segmentatsiya topilmadi!");
+    return;
+  }
+
+  const data = JSON.parse(saved);
+  const {
+    segmentationId,
+    scalarData,
+    volumeMetadata,
+    imageIds,
+    segments,
+    representationData,
+  } = data;
+
+  // 1. Volume (labelmap) ni cache ga qayta joylash
+  cache.putVolume(segmentationId, {
+    ...volumeMetadata,
+    scalarData: new Uint8Array(scalarData),
+    metadata: {},
+    imageIds,
+  });
+
+  // 2. Segmentatsiyani add qilish
+  await segmentation.addSegmentations([
+    {
+      segmentationId,
+      representation: {
+        type: csToolsEnums.SegmentationRepresentations.Labelmap,
+        data: {
+          volumeId: segmentationId,
+        },
+      },
+    },
+  ]);
+
+  // 3. Uni barcha viewportlarga ulang
+  await segmentation.addLabelmapRepresentationToViewportMap({
+    [viewportIdAxial]: [
+      {
+        segmentationId,
+        type: csToolsEnums.SegmentationRepresentations.Labelmap,
+      },
+    ],
+    [viewportIdSagittal]: [
+      {
+        segmentationId,
+        type: csToolsEnums.SegmentationRepresentations.Labelmap,
+      },
+    ],
+    [viewportIdCoronal]: [
+      {
+        segmentationId,
+        type: csToolsEnums.SegmentationRepresentations.Labelmap,
+      },
+    ],
+  });
+
+  segmentation.setActiveSegmentation(segmentationId);
 };
 
 onMounted(async () => {
