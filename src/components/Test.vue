@@ -279,127 +279,59 @@ const restoreSegmentation = async () => {
 
 const toSave = async () => {
   try {
-    console.log("Starting toSave function...");
-    
     // Get the segmentation state
     const segmentationState = segmentation.state.getSegmentation(segmentationId);
-    console.log("Segmentation state:", segmentationState);
-
     if (!segmentationState) {
       console.error("No segmentation found");
       return;
     }
 
-    // Get the labelmap representation data
-    const labelmapData = segmentationState.representationData?.Labelmap;
-    console.log("Labelmap data:", labelmapData);
-
-    if (!labelmapData) {
-      console.error("No labelmap data found", segmentationState.representationData);
-      return;
-    }
-
-    // Get the volumeId - handle both volume and stack types
-    let volumeId: string | null = null;
-    
-    if (labelmapData && typeof labelmapData === 'object') {
-      if ('volumeId' in labelmapData && labelmapData.volumeId) {
-        volumeId = labelmapData.volumeId as string;
-      } else {
-        // Use the segmentation ID as volume ID
-        volumeId = segmentationId;
-      }
-    }
-
-    console.log("Volume ID:", volumeId);
-
-    if (!volumeId) {
-      console.error("No volume ID found");
-      return;
-    }
-
     // Get the labelmap volume from cache
-    const labelmapVolume = cache.getVolume(volumeId);
-    console.log("Labelmap volume:", labelmapVolume);
-
-    if (!labelmapVolume) {
-      console.error("Labelmap volume not found in cache");
+    const labelmapVolume = cache.getVolume(segmentationId);
+    if (!labelmapVolume || !labelmapVolume.voxelManager) {
+      console.error("Labelmap volume not found");
       return;
     }
 
-    // Get volume dimensions and data
+    // Get volume dimensions
     const dimensions = labelmapVolume.dimensions;
-    console.log("Dimensions:", dimensions);
     
-    // Get scalar data using VoxelManager properly
+    // Get scalar data using VoxelManager
     let scalarData;
     
-    if (!labelmapVolume.voxelManager) {
-      console.error("No voxelManager found in labelmap volume");
-      return;
-    }
-    
-    // Try different methods to get scalar data
+    // Try getCompleteScalarDataArray first (preferred for Cornerstone3D 2.0)
     try {
-      // Method 1: Try getCompleteScalarDataArray() (Cornerstone3D 2.0)
       if (typeof labelmapVolume.voxelManager.getCompleteScalarDataArray === 'function') {
         scalarData = labelmapVolume.voxelManager.getCompleteScalarDataArray();
-        console.log("Got scalar data using getCompleteScalarDataArray()");
       }
     } catch (error) {
-      console.log("getCompleteScalarDataArray failed, trying alternative methods...");
+      // Silent fallback
     }
     
-    // Method 2: Try getScalarData with error handling
-    if (!scalarData) {
-      try {
-        scalarData = labelmapVolume.voxelManager.getScalarData();
-        console.log("Got scalar data using getScalarData()");
-      } catch (error) {
-        console.log("getScalarData failed, building array manually...");
-      }
-    }
-    
-    // Method 3: Manually build the array using getAtIndex
+    // Fallback: Manually build the array using getAtIndex
     if (!scalarData) {
       const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
-      const Constructor = labelmapVolume.voxelManager.getConstructor() || Uint8Array;
-      scalarData = new Constructor(totalVoxels);
-      
-      console.log("Building scalar data manually from voxels...");
-      let hasAnySegmentation = false;
+      scalarData = new Uint8Array(totalVoxels);
       
       for (let i = 0; i < totalVoxels; i++) {
         try {
           const value = labelmapVolume.voxelManager.getAtIndex(i);
-          // Handle RGB values if returned
-          const numValue = typeof value === 'number' ? value : (value as any)?.r || 0;
-          scalarData[i] = numValue;
-          if (numValue > 0) hasAnySegmentation = true;
+          scalarData[i] = typeof value === 'number' ? value : 0;
         } catch (e) {
           scalarData[i] = 0;
         }
       }
-      
-      if (!hasAnySegmentation) {
-        console.warn("No segmentation data found - the labelmap is empty. Draw something first!");
-      }
     }
-    
-    console.log("Scalar data length:", scalarData?.length);
 
     // Choose which slice to export (middle slice of axial view)
     const sliceIndex = Math.floor(dimensions[2] / 2);
     const width = dimensions[0];
     const height = dimensions[1];
     const sliceSize = width * height;
-
-    // Extract slice data - convert ArrayLike to array if needed
     const sliceStart = sliceIndex * sliceSize;
-    const sliceEnd = sliceStart + sliceSize;
+
+    // Extract slice data
     const sliceData = new Uint8Array(sliceSize);
-    
-    // Copy slice data from the scalar data
     for (let i = 0; i < sliceSize; i++) {
       sliceData[i] = scalarData[sliceStart + i] || 0;
     }
@@ -455,15 +387,20 @@ const toSave = async () => {
       }, 1000);
     }, "image/png");
 
-    // Also save the full segmentation data to localStorage for restoration
-    const segmentationData = {
+    // Save segmentation data to localStorage for restoration
+    localStorage.setItem("savedSegmentation", JSON.stringify({
       segmentationId: segmentationState.segmentationId,
-      representationData: segmentationState.representationData,
+      scalarData: Array.from(scalarData),
+      volumeMetadata: {
+        dimensions: labelmapVolume.dimensions,
+        spacing: labelmapVolume.spacing,
+        origin: labelmapVolume.origin,
+        direction: labelmapVolume.direction,
+      },
       segments: segmentationState.segments,
-    };
-
-    localStorage.setItem("savedSegmentation", JSON.stringify(segmentationData));
-    console.log("Segmentation saved to localStorage and exported as PNG");
+    }));
+    
+    console.log("Segmentation saved");
     
   } catch (error) {
     console.error("Error saving segmentation:", error);
