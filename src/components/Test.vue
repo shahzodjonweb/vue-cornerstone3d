@@ -1,8 +1,24 @@
 <template>
-  <button @click="toSave" class="save">Save Segmentation</button>
-  <button @click="restoreSegmentation" class="restore">
-    Restore Segmentation
-  </button>
+  <div class="controls-container">
+    <button @click="toSave" class="save">Save Segmentation</button>
+    <button @click="restoreSegmentation" class="restore">
+      Restore Segmentation
+    </button>
+    
+    <div class="segment-controls">
+      <label>Active Segment: </label>
+      <select v-model="activeSegmentIndex" @change="changeActiveSegment" class="segment-select">
+        <option v-for="i in 10" :key="i" :value="i">
+          Segment {{ i }}
+        </option>
+      </select>
+      <span class="segment-color-preview" 
+            :style="{ backgroundColor: getSegmentColorStyle(activeSegmentIndex) }">
+      </span>
+      <span class="segment-label">{{ getSegmentLabel(activeSegmentIndex) }}</span>
+    </div>
+  </div>
+  
   <div class="wrapper">
     <div ref="elementRefAxial" class="viewport" />
     <div ref="elementRefSagittal" class="viewport" />
@@ -48,6 +64,7 @@ const elementRefAxial = ref<HTMLDivElement | null>(null);
 const elementRefSagittal = ref<HTMLDivElement | null>(null);
 const elementRefCoronal = ref<HTMLDivElement | null>(null);
 const running = ref(false);
+const activeSegmentIndex = ref(1);
 let segmentationId = "MY_SEGMENTATION_ID";
 const StudyInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463";
@@ -196,6 +213,59 @@ const setupViewer = async () => {
   });
 
   renderingEngine.render();
+};
+
+// Centralized segment color mapping - used for both UI and export
+const segmentColorMap: { [key: number]: [number, number, number] } = {
+  0: [0, 0, 0],           // Background - transparent
+  1: [255, 0, 0],         // Red
+  2: [0, 255, 0],         // Green
+  3: [0, 0, 255],         // Blue
+  4: [255, 255, 0],       // Yellow
+  5: [255, 0, 255],       // Magenta
+  6: [0, 255, 255],       // Cyan
+  7: [255, 128, 0],       // Orange
+  8: [128, 0, 255],       // Purple
+  9: [0, 128, 0],         // Dark Green
+  10: [128, 128, 128]     // Gray
+};
+
+// Change active segment for drawing
+const changeActiveSegment = async () => {
+  segmentation.segmentIndex.setActiveSegmentIndex(
+    segmentationId, 
+    activeSegmentIndex.value
+  );
+  console.log(`Active segment changed to: ${activeSegmentIndex.value}`);
+};
+
+// Get current active segment
+const getCurrentSegment = () => {
+  return segmentation.segmentIndex.getActiveSegmentIndex(segmentationId) || 1;
+};
+
+// Get segment color for display
+const getSegmentColorStyle = (index: number) => {
+  const color = segmentColorMap[index];
+  if (!color || index === 0) return 'transparent';
+  return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+};
+
+// Get segment label
+const getSegmentLabel = (index: number) => {
+  const labels: { [key: number]: string } = {
+    1: 'Red',
+    2: 'Green',
+    3: 'Blue',
+    4: 'Yellow',
+    5: 'Magenta',
+    6: 'Cyan',
+    7: 'Orange',
+    8: 'Purple',
+    9: 'Dark Green',
+    10: 'Gray'
+  };
+  return labels[index] || '';
 };
 
 const restoreSegmentation = async () => {
@@ -347,20 +417,10 @@ const toSave = async () => {
 
     const imageData = ctx.createImageData(width, height);
 
-    // Define colors for different segment values
-    const segmentColors: { [key: number]: [number, number, number] } = {
-      0: [0, 0, 0],       // Background - transparent
-      1: [255, 0, 0],     // Segment 1 - Red
-      2: [0, 255, 0],     // Segment 2 - Green
-      3: [0, 0, 255],     // Segment 3 - Blue
-      4: [255, 255, 0],   // Segment 4 - Yellow
-      5: [255, 0, 255],   // Segment 5 - Magenta
-    };
-
-    // Fill image data with segmentation colors
+    // Fill image data with segmentation colors using centralized color map
     for (let i = 0; i < sliceData.length; i++) {
       const segmentValue = sliceData[i];
-      const color = segmentColors[segmentValue] || [128, 128, 128];
+      const color = segmentColorMap[segmentValue] || [128, 128, 128];
       const alpha = segmentValue > 0 ? 255 : 0; // Transparent for background
 
       const pixelIndex = i * 4;
@@ -428,19 +488,78 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.controls-container {
+  margin-bottom: 20px;
+  padding: 15px;
+  background-color: #f5f5f5;
+  border-radius: 8px;
+}
+
 .wrapper {
   display: flex;
   gap: 8px;
 }
+
 .viewport {
   width: 512px;
   height: 512px;
   background-color: black;
 }
+
 .save,
 .restore {
   margin: 5px;
   padding: 10px;
   cursor: pointer;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.save:hover,
+.restore:hover {
+  background-color: #45a049;
+}
+
+.segment-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: 20px;
+  padding: 10px;
+  background-color: white;
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.segment-controls label {
+  font-weight: bold;
+  color: #333;
+}
+
+.segment-select {
+  padding: 5px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.segment-color-preview {
+  display: inline-block;
+  width: 30px;
+  height: 30px;
+  border: 2px solid #333;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.segment-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #666;
+  padding: 0 5px;
 }
 </style>
