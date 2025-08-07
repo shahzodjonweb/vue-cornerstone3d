@@ -208,12 +208,206 @@ const restoreSegmentation = async () => {
 };
 
 const toSave = async () => {
-  if (!cvReady) {
-    console.error("OpenCV hali yuklanmagan!");
-    return;
+  try {
+    console.log("Starting toSave function...");
+    
+    // Get the segmentation state
+    const segmentationState = segmentation.state.getSegmentation(segmentationId);
+    console.log("Segmentation state:", segmentationState);
+
+    if (!segmentationState) {
+      console.error("No segmentation found");
+      return;
+    }
+
+    // Get the labelmap representation data
+    const labelmapData = segmentationState.representationData?.Labelmap;
+    console.log("Labelmap data:", labelmapData);
+
+    if (!labelmapData) {
+      console.error("No labelmap data found", segmentationState.representationData);
+      return;
+    }
+
+    // Get the volumeId - handle both volume and stack types
+    let volumeId: string | null = null;
+    
+    if (labelmapData && typeof labelmapData === 'object') {
+      if ('volumeId' in labelmapData && labelmapData.volumeId) {
+        volumeId = labelmapData.volumeId as string;
+      } else {
+        // Use the segmentation ID as volume ID
+        volumeId = segmentationId;
+      }
+    }
+
+    console.log("Volume ID:", volumeId);
+
+    if (!volumeId) {
+      console.error("No volume ID found");
+      return;
+    }
+
+    // Get the labelmap volume from cache
+    const labelmapVolume = cache.getVolume(volumeId);
+    console.log("Labelmap volume:", labelmapVolume);
+
+    if (!labelmapVolume) {
+      console.error("Labelmap volume not found in cache");
+      return;
+    }
+
+    // Get volume dimensions and data
+    const dimensions = labelmapVolume.dimensions;
+    console.log("Dimensions:", dimensions);
+    
+    // Get scalar data using VoxelManager properly
+    let scalarData;
+    
+    if (!labelmapVolume.voxelManager) {
+      console.error("No voxelManager found in labelmap volume");
+      return;
+    }
+    
+    // Try different methods to get scalar data
+    try {
+      // Method 1: Try getCompleteScalarDataArray() (Cornerstone3D 2.0)
+      if (typeof labelmapVolume.voxelManager.getCompleteScalarDataArray === 'function') {
+        scalarData = labelmapVolume.voxelManager.getCompleteScalarDataArray();
+        console.log("Got scalar data using getCompleteScalarDataArray()");
+      }
+    } catch (error) {
+      console.log("getCompleteScalarDataArray failed, trying alternative methods...");
+    }
+    
+    // Method 2: Try getScalarData with error handling
+    if (!scalarData) {
+      try {
+        scalarData = labelmapVolume.voxelManager.getScalarData();
+        console.log("Got scalar data using getScalarData()");
+      } catch (error) {
+        console.log("getScalarData failed, building array manually...");
+      }
+    }
+    
+    // Method 3: Manually build the array using getAtIndex
+    if (!scalarData) {
+      const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
+      const Constructor = labelmapVolume.voxelManager.getConstructor() || Uint8Array;
+      scalarData = new Constructor(totalVoxels);
+      
+      console.log("Building scalar data manually from voxels...");
+      let hasAnySegmentation = false;
+      
+      for (let i = 0; i < totalVoxels; i++) {
+        try {
+          const value = labelmapVolume.voxelManager.getAtIndex(i);
+          // Handle RGB values if returned
+          const numValue = typeof value === 'number' ? value : (value as any)?.r || 0;
+          scalarData[i] = numValue;
+          if (numValue > 0) hasAnySegmentation = true;
+        } catch (e) {
+          scalarData[i] = 0;
+        }
+      }
+      
+      if (!hasAnySegmentation) {
+        console.warn("No segmentation data found - the labelmap is empty. Draw something first!");
+      }
+    }
+    
+    console.log("Scalar data length:", scalarData?.length);
+
+    // Choose which slice to export (middle slice of axial view)
+    const sliceIndex = Math.floor(dimensions[2] / 2);
+    const width = dimensions[0];
+    const height = dimensions[1];
+    const sliceSize = width * height;
+
+    // Extract slice data - convert ArrayLike to array if needed
+    const sliceStart = sliceIndex * sliceSize;
+    const sliceEnd = sliceStart + sliceSize;
+    const sliceData = new Uint8Array(sliceSize);
+    
+    // Copy slice data from the scalar data
+    for (let i = 0; i < sliceSize; i++) {
+      sliceData[i] = scalarData[sliceStart + i] || 0;
+    }
+
+    // Create canvas for visualization
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    if (!ctx) {
+      console.error("Could not get canvas context");
+      return;
+    }
+
+    const imageData = ctx.createImageData(width, height);
+
+    // Define colors for different segment values
+    const segmentColors: { [key: number]: [number, number, number] } = {
+      0: [0, 0, 0],       // Background - transparent
+      1: [255, 0, 0],     // Segment 1 - Red
+      2: [0, 255, 0],     // Segment 2 - Green
+      3: [0, 0, 255],     // Segment 3 - Blue
+      4: [255, 255, 0],   // Segment 4 - Yellow
+      5: [255, 0, 255],   // Segment 5 - Magenta
+    };
+
+    // Fill image data with segmentation colors
+    for (let i = 0; i < sliceData.length; i++) {
+      const segmentValue = sliceData[i];
+      const color = segmentColors[segmentValue] || [128, 128, 128];
+      const alpha = segmentValue > 0 ? 255 : 0; // Transparent for background
+
+      const pixelIndex = i * 4;
+      imageData.data[pixelIndex] = color[0];     // R
+      imageData.data[pixelIndex + 1] = color[1]; // G
+      imageData.data[pixelIndex + 2] = color[2]; // B
+      imageData.data[pixelIndex + 3] = alpha;    // A
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+
+    // Export as PNG blob and download
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        console.error("Failed to create blob");
+        return;
+      }
+
+      const url = URL.createObjectURL(blob);
+      console.log("Segmentation image blob URL:", url);
+      console.log("Blob size:", blob.size, "bytes");
+      console.log("Blob type:", blob.type);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `segmentation_slice_${sliceIndex}.png`;
+      a.click();
+
+      // Clean up after a delay to allow download
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+      }, 1000);
+    }, "image/png");
+
+    // Also save the full segmentation data to localStorage for restoration
+    const segmentationData = {
+      segmentationId: segmentationState.segmentationId,
+      representationData: segmentationState.representationData,
+      segments: segmentationState.segments,
+    };
+
+    localStorage.setItem("savedSegmentation", JSON.stringify(segmentationData));
+    console.log("Segmentation saved to localStorage and exported as PNG");
+    
+  } catch (error) {
+    console.error("Error saving segmentation:", error);
   }
-  const seg = segmentation.state.getSegmentation(segmentationId);
-  console.log(seg);
 };
 
 onMounted(async () => {
