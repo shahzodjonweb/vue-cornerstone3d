@@ -1,6 +1,7 @@
 <template>
   <div class="controls-container">
     <button @click="toSave" class="save">Save Segmentation</button>
+    <button @click="toSave2" class="save-contours">Extract Contours</button>
     <button @click="restoreSegmentation" class="restore">
       Restore Segmentation
     </button>
@@ -54,6 +55,13 @@ import {
   getSegmentationFromIndexedDB,
 } from "../segmentationStorage";
 import cv from "@techstark/opencv-js";
+
+// Declare window.cv for TypeScript
+declare global {
+  interface Window {
+    cv: any;
+  }
+}
 
 const STORAGE_KEY = "mySegmentationData";
 const CONTOURS_STORAGE_KEY = "savedContours";
@@ -277,6 +285,203 @@ const restoreSegmentation = async () => {
   console.log(JSON.parse(savedData));
 };
 
+// Helper function to wait for OpenCV
+const waitForOpenCV = async () => {
+  // First ensure the imported cv is ready
+  if (cvReady) {
+    return cvReady;
+  }
+  
+  try {
+    // Wait for the imported cv module
+    cvReady = await cv;
+    console.log("OpenCV loaded from import");
+    return cvReady;
+  } catch (error) {
+    console.error("Failed to load OpenCV:", error);
+    throw error;
+  }
+};
+
+// Helper function to find contours from segmentation data
+const findContoursFromSegmentation = async (sliceData: Uint8Array, width: number, height: number) => {
+  // Use the imported cv module
+  const cv = cvReady;
+  if (!cv) {
+    throw new Error("OpenCV not initialized");
+  }
+  const contoursList = [];
+  
+  // Create Mat from slice data (single channel, grayscale)
+  const src = new cv.Mat(height, width, cv.CV_8UC1);
+  src.data.set(sliceData);
+  
+  // Process each segment (1-10)
+  for (let segmentId = 1; segmentId <= 10; segmentId++) {
+    const mask = new cv.Mat();
+    
+    // Create comparison mat for this segment value
+    const comparisonMat = new cv.Mat(
+      height,
+      width,
+      cv.CV_8UC1,
+      new cv.Scalar(segmentId)
+    );
+    
+    // Find pixels matching this segment
+    cv.compare(src, comparisonMat, mask, cv.CMP_EQ);
+    
+    // Find contours
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(
+      mask,
+      contours,
+      hierarchy,
+      cv.RETR_EXTERNAL,
+      cv.CHAIN_APPROX_SIMPLE
+    );
+    
+    // Extract contour points
+    const segmentContours = [];
+    for (let i = 0; i < contours.size(); i++) {
+      const contour = contours.get(i);
+      const points = [];
+      
+      for (let j = 0; j < contour.data32S.length; j += 2) {
+        points.push([
+          contour.data32S[j],
+          contour.data32S[j + 1]
+        ]);
+      }
+      
+      if (points.length > 0) {
+        segmentContours.push({
+          id: `segment_${segmentId}_contour_${i}`,
+          points: points
+        });
+      }
+      
+      contour.delete();
+    }
+    
+    // Add to results if contours found
+    if (segmentContours.length > 0) {
+      const color = segmentColorMap[segmentId];
+      contoursList.push({
+        segmentId: segmentId,
+        color: `rgb(${color[0]}, ${color[1]}, ${color[2]})`,
+        label: getSegmentLabel(segmentId),
+        contours: segmentContours
+      });
+    }
+    
+    // Cleanup
+    contours.delete();
+    hierarchy.delete();
+    mask.delete();
+    comparisonMat.delete();
+  }
+  
+  src.delete();
+  return contoursList;
+};
+
+const toSave2 = async () => {
+  try {
+    console.log("Starting toSave2 with OpenCV contour extraction...");
+    
+    // Wait for OpenCV to be ready
+    const cv = await waitForOpenCV();
+    console.log("OpenCV ready", cv);
+    
+    // Get the segmentation state
+    const segmentationState = segmentation.state.getSegmentation(segmentationId);
+    if (!segmentationState) {
+      console.error("No segmentation found");
+      return;
+    }
+
+    // Get the labelmap volume from cache
+    const labelmapVolume = cache.getVolume(segmentationId);
+    if (!labelmapVolume || !labelmapVolume.voxelManager) {
+      console.error("Labelmap volume not found");
+      return;
+    }
+
+    // Get volume dimensions
+    const dimensions = labelmapVolume.dimensions;
+    
+    // Get scalar data using VoxelManager
+    let scalarData;
+    
+    // Try getCompleteScalarDataArray first (preferred for Cornerstone3D 2.0)
+    try {
+      if (typeof labelmapVolume.voxelManager.getCompleteScalarDataArray === 'function') {
+        scalarData = labelmapVolume.voxelManager.getCompleteScalarDataArray();
+      }
+    } catch (error) {
+      // Silent fallback
+    }
+    
+    // Fallback: Manually build the array using getAtIndex
+    if (!scalarData) {
+      const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
+      scalarData = new Uint8Array(totalVoxels);
+      
+      for (let i = 0; i < totalVoxels; i++) {
+        try {
+          const value = labelmapVolume.voxelManager.getAtIndex(i);
+          scalarData[i] = typeof value === 'number' ? value : 0;
+        } catch (e) {
+          scalarData[i] = 0;
+        }
+      }
+    }
+
+    // Choose which slice to export (middle slice of axial view)
+    const sliceIndex = Math.floor(dimensions[2] / 2);
+    const width = dimensions[0];
+    const height = dimensions[1];
+    const sliceSize = width * height;
+    const sliceStart = sliceIndex * sliceSize;
+
+    // Extract slice data
+    const sliceData = new Uint8Array(sliceSize);
+    for (let i = 0; i < sliceSize; i++) {
+      sliceData[i] = scalarData[sliceStart + i] || 0;
+    }
+    
+    console.log(`Processing slice ${sliceIndex} with dimensions ${width}x${height}`);
+    
+    // Find contours using OpenCV
+    const contourResults = await findContoursFromSegmentation(sliceData, width, height);
+    
+    console.log("Contours found:", contourResults);
+    console.log(`Total segments with contours: ${contourResults.length}`);
+    
+    // Save contours to localStorage
+    localStorage.setItem("segmentationContours", JSON.stringify({
+      sliceIndex: sliceIndex,
+      width: width,
+      height: height,
+      contours: contourResults,
+      timestamp: new Date().toISOString()
+    }));
+    
+    // Log summary
+    contourResults.forEach(segment => {
+      console.log(`Segment ${segment.segmentId} (${segment.label}): ${segment.contours.length} contours found`);
+    });
+    
+    return contourResults;
+    
+  } catch (error) {
+    console.error("Error in toSave2:", error);
+    return [];
+  }
+};
+
 const toSave = async () => {
   try {
     // Get the segmentation state
@@ -409,7 +614,14 @@ const toSave = async () => {
 
 onMounted(async () => {
   await setupViewer();
-  cvReady = await cv;
+  
+  // Initialize OpenCV
+  try {
+    cvReady = await cv;
+    console.log("OpenCV initialized in onMounted");
+  } catch (error) {
+    console.error("Failed to initialize OpenCV:", error);
+  }
 });
 
 onUnmounted(() => {
@@ -444,6 +656,7 @@ onUnmounted(() => {
 }
 
 .save,
+.save-contours,
 .restore {
   margin: 5px;
   padding: 10px;
@@ -455,9 +668,17 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
+.save-contours {
+  background-color: #2196F3;
+}
+
 .save:hover,
 .restore:hover {
   background-color: #45a049;
+}
+
+.save-contours:hover {
+  background-color: #0b7dda;
 }
 
 .segment-controls {
