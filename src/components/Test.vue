@@ -5,21 +5,27 @@
     <button @click="restoreSegmentation" class="restore">
       Restore Segmentation
     </button>
-    
+
     <div class="segment-controls">
       <label>Active Segment: </label>
-      <select v-model="activeSegmentIndex" @change="changeActiveSegment" class="segment-select">
-        <option v-for="i in 10" :key="i" :value="i">
-          Segment {{ i }}
-        </option>
+      <select
+        v-model="activeSegmentIndex"
+        @change="changeActiveSegment"
+        class="segment-select"
+      >
+        <option v-for="i in 10" :key="i" :value="i">Segment {{ i }}</option>
       </select>
-      <span class="segment-color-preview" 
-            :style="{ backgroundColor: getSegmentColorStyle(activeSegmentIndex) }">
+      <span
+        class="segment-color-preview"
+        :style="{ backgroundColor: getSegmentColorStyle(activeSegmentIndex) }"
+      >
       </span>
-      <span class="segment-label">{{ getSegmentLabel(activeSegmentIndex) }}</span>
+      <span class="segment-label">{{
+        getSegmentLabel(activeSegmentIndex)
+      }}</span>
     </div>
   </div>
-  
+
   <div class="wrapper">
     <div ref="elementRefAxial" class="viewport" />
     <div ref="elementRefSagittal" class="viewport" />
@@ -225,23 +231,23 @@ const setupViewer = async () => {
 
 // Centralized segment color mapping - used for both UI and export
 const segmentColorMap: { [key: number]: [number, number, number] } = {
-  0: [0, 0, 0],           // Background - transparent
-  1: [255, 0, 0],         // Red
-  2: [0, 255, 0],         // Green
-  3: [0, 0, 255],         // Blue
-  4: [255, 255, 0],       // Yellow
-  5: [255, 0, 255],       // Magenta
-  6: [0, 255, 255],       // Cyan
-  7: [255, 128, 0],       // Orange
-  8: [128, 0, 255],       // Purple
-  9: [0, 128, 0],         // Dark Green
-  10: [128, 128, 128]     // Gray
+  0: [0, 0, 0], // Background - transparent
+  1: [255, 0, 0], // Red
+  2: [0, 255, 0], // Green
+  3: [0, 0, 255], // Blue
+  4: [255, 255, 0], // Yellow
+  5: [255, 0, 255], // Magenta
+  6: [0, 255, 255], // Cyan
+  7: [255, 128, 0], // Orange
+  8: [128, 0, 255], // Purple
+  9: [0, 128, 0], // Dark Green
+  10: [128, 128, 128], // Gray
 };
 
 // Change active segment for drawing
 const changeActiveSegment = async () => {
   segmentation.segmentIndex.setActiveSegmentIndex(
-    segmentationId, 
+    segmentationId,
     activeSegmentIndex.value
   );
   console.log(`Active segment changed to: ${activeSegmentIndex.value}`);
@@ -255,25 +261,25 @@ const getCurrentSegment = () => {
 // Get segment color for display
 const getSegmentColorStyle = (index: number) => {
   const color = segmentColorMap[index];
-  if (!color || index === 0) return 'transparent';
+  if (!color || index === 0) return "transparent";
   return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
 };
 
 // Get segment label
 const getSegmentLabel = (index: number) => {
   const labels: { [key: number]: string } = {
-    1: 'Red',
-    2: 'Green',
-    3: 'Blue',
-    4: 'Yellow',
-    5: 'Magenta',
-    6: 'Cyan',
-    7: 'Orange',
-    8: 'Purple',
-    9: 'Dark Green',
-    10: 'Gray'
+    1: "Red",
+    2: "Green",
+    3: "Blue",
+    4: "Yellow",
+    5: "Magenta",
+    6: "Cyan",
+    7: "Orange",
+    8: "Purple",
+    9: "Dark Green",
+    10: "Gray",
   };
-  return labels[index] || '';
+  return labels[index] || "";
 };
 
 const restoreSegmentation = async () => {
@@ -291,7 +297,7 @@ const waitForOpenCV = async () => {
   if (cvReady) {
     return cvReady;
   }
-  
+
   try {
     // Wait for the imported cv module
     cvReady = await cv;
@@ -304,22 +310,26 @@ const waitForOpenCV = async () => {
 };
 
 // Helper function to find contours from segmentation data
-const findContoursFromSegmentation = async (sliceData: Uint8Array, width: number, height: number) => {
+const findContoursFromSegmentation = async (
+  sliceData: Uint8Array,
+  width: number,
+  height: number
+) => {
   // Use the imported cv module
   const cv = cvReady;
   if (!cv) {
     throw new Error("OpenCV not initialized");
   }
   const contoursList = [];
-  
+
   // Create Mat from slice data (single channel, grayscale)
   const src = new cv.Mat(height, width, cv.CV_8UC1);
   src.data.set(sliceData);
-  
+
   // Process each segment (1-10)
   for (let segmentId = 1; segmentId <= 10; segmentId++) {
     const mask = new cv.Mat();
-    
+
     // Create comparison mat for this segment value
     const comparisonMat = new cv.Mat(
       height,
@@ -327,10 +337,10 @@ const findContoursFromSegmentation = async (sliceData: Uint8Array, width: number
       cv.CV_8UC1,
       new cv.Scalar(segmentId)
     );
-    
+
     // Find pixels matching this segment
     cv.compare(src, comparisonMat, mask, cv.CMP_EQ);
-    
+
     // Find contours
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
@@ -341,30 +351,27 @@ const findContoursFromSegmentation = async (sliceData: Uint8Array, width: number
       cv.RETR_EXTERNAL,
       cv.CHAIN_APPROX_SIMPLE
     );
-    
+
     // Extract contour points
     const segmentContours = [];
     for (let i = 0; i < contours.size(); i++) {
       const contour = contours.get(i);
       const points = [];
-      
+
       for (let j = 0; j < contour.data32S.length; j += 2) {
-        points.push([
-          contour.data32S[j],
-          contour.data32S[j + 1]
-        ]);
+        points.push([contour.data32S[j], contour.data32S[j + 1]]);
       }
-      
+
       if (points.length > 0) {
         segmentContours.push({
           id: `segment_${segmentId}_contour_${i}`,
-          points: points
+          points: points,
         });
       }
-      
+
       contour.delete();
     }
-    
+
     // Add to results if contours found
     if (segmentContours.length > 0) {
       const color = segmentColorMap[segmentId];
@@ -372,31 +379,33 @@ const findContoursFromSegmentation = async (sliceData: Uint8Array, width: number
         segmentId: segmentId,
         color: `rgb(${color[0]}, ${color[1]}, ${color[2]})`,
         label: getSegmentLabel(segmentId),
-        contours: segmentContours
+        contours: segmentContours,
       });
     }
-    
+
     // Cleanup
     contours.delete();
     hierarchy.delete();
     mask.delete();
     comparisonMat.delete();
   }
-  
+
   src.delete();
   return contoursList;
 };
 
 const toSave2 = async () => {
   try {
+    const time = new Date().getTime();
     console.log("Starting toSave2 with OpenCV contour extraction...");
-    
+
     // Wait for OpenCV to be ready
     const cv = await waitForOpenCV();
     console.log("OpenCV ready", cv);
-    
+
     // Get the segmentation state
-    const segmentationState = segmentation.state.getSegmentation(segmentationId);
+    const segmentationState =
+      segmentation.state.getSegmentation(segmentationId);
     if (!segmentationState) {
       console.error("No segmentation found");
       return;
@@ -411,28 +420,31 @@ const toSave2 = async () => {
 
     // Get volume dimensions
     const dimensions = labelmapVolume.dimensions;
-    
+
     // Get scalar data using VoxelManager
     let scalarData;
-    
+
     // Try getCompleteScalarDataArray first (preferred for Cornerstone3D 2.0)
     try {
-      if (typeof labelmapVolume.voxelManager.getCompleteScalarDataArray === 'function') {
+      if (
+        typeof labelmapVolume.voxelManager.getCompleteScalarDataArray ===
+        "function"
+      ) {
         scalarData = labelmapVolume.voxelManager.getCompleteScalarDataArray();
       }
     } catch (error) {
       // Silent fallback
     }
-    
+
     // Fallback: Manually build the array using getAtIndex
     if (!scalarData) {
       const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
       scalarData = new Uint8Array(totalVoxels);
-      
+
       for (let i = 0; i < totalVoxels; i++) {
         try {
           const value = labelmapVolume.voxelManager.getAtIndex(i);
-          scalarData[i] = typeof value === 'number' ? value : 0;
+          scalarData[i] = typeof value === "number" ? value : 0;
         } catch (e) {
           scalarData[i] = 0;
         }
@@ -451,31 +463,41 @@ const toSave2 = async () => {
     for (let i = 0; i < sliceSize; i++) {
       sliceData[i] = scalarData[sliceStart + i] || 0;
     }
-    
-    console.log(`Processing slice ${sliceIndex} with dimensions ${width}x${height}`);
-    
+
+    console.log(
+      `Processing slice ${sliceIndex} with dimensions ${width}x${height}`
+    );
+
     // Find contours using OpenCV
-    const contourResults = await findContoursFromSegmentation(sliceData, width, height);
-    
+    const contourResults = await findContoursFromSegmentation(
+      sliceData,
+      width,
+      height
+    );
+
     console.log("Contours found:", contourResults);
     console.log(`Total segments with contours: ${contourResults.length}`);
-    
+
     // Save contours to localStorage
-    localStorage.setItem("segmentationContours", JSON.stringify({
-      sliceIndex: sliceIndex,
-      width: width,
-      height: height,
-      contours: contourResults,
-      timestamp: new Date().toISOString()
-    }));
-    
+    localStorage.setItem(
+      "segmentationContours",
+      JSON.stringify({
+        sliceIndex: sliceIndex,
+        width: width,
+        height: height,
+        contours: contourResults,
+        timestamp: new Date().toISOString(),
+      })
+    );
+
     // Log summary
-    contourResults.forEach(segment => {
-      console.log(`Segment ${segment.segmentId} (${segment.label}): ${segment.contours.length} contours found`);
+    contourResults.forEach((segment) => {
+      console.log(
+        `Segment ${segment.segmentId} (${segment.label}): ${segment.contours.length} contours found`
+      );
     });
-    
+    console.log("time get:", new Date().getTime() - time);
     return contourResults;
-    
   } catch (error) {
     console.error("Error in toSave2:", error);
     return [];
@@ -485,7 +507,8 @@ const toSave2 = async () => {
 const toSave = async () => {
   try {
     // Get the segmentation state
-    const segmentationState = segmentation.state.getSegmentation(segmentationId);
+    const segmentationState =
+      segmentation.state.getSegmentation(segmentationId);
     if (!segmentationState) {
       console.error("No segmentation found");
       return;
@@ -500,28 +523,31 @@ const toSave = async () => {
 
     // Get volume dimensions
     const dimensions = labelmapVolume.dimensions;
-    
+
     // Get scalar data using VoxelManager
     let scalarData;
-    
+
     // Try getCompleteScalarDataArray first (preferred for Cornerstone3D 2.0)
     try {
-      if (typeof labelmapVolume.voxelManager.getCompleteScalarDataArray === 'function') {
+      if (
+        typeof labelmapVolume.voxelManager.getCompleteScalarDataArray ===
+        "function"
+      ) {
         scalarData = labelmapVolume.voxelManager.getCompleteScalarDataArray();
       }
     } catch (error) {
       // Silent fallback
     }
-    
+
     // Fallback: Manually build the array using getAtIndex
     if (!scalarData) {
       const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
       scalarData = new Uint8Array(totalVoxels);
-      
+
       for (let i = 0; i < totalVoxels; i++) {
         try {
           const value = labelmapVolume.voxelManager.getAtIndex(i);
-          scalarData[i] = typeof value === 'number' ? value : 0;
+          scalarData[i] = typeof value === "number" ? value : 0;
         } catch (e) {
           scalarData[i] = 0;
         }
@@ -561,10 +587,10 @@ const toSave = async () => {
       const alpha = segmentValue > 0 ? 255 : 0; // Transparent for background
 
       const pixelIndex = i * 4;
-      imageData.data[pixelIndex] = color[0];     // R
+      imageData.data[pixelIndex] = color[0]; // R
       imageData.data[pixelIndex + 1] = color[1]; // G
       imageData.data[pixelIndex + 2] = color[2]; // B
-      imageData.data[pixelIndex + 3] = alpha;    // A
+      imageData.data[pixelIndex + 3] = alpha; // A
     }
 
     ctx.putImageData(imageData, 0, 0);
@@ -593,20 +619,22 @@ const toSave = async () => {
     }, "image/png");
 
     // Save segmentation data to localStorage for restoration
-    localStorage.setItem("savedSegmentation", JSON.stringify({
-      segmentationId: segmentationState.segmentationId,
-      scalarData: Array.from(scalarData),
-      volumeMetadata: {
-        dimensions: labelmapVolume.dimensions,
-        spacing: labelmapVolume.spacing,
-        origin: labelmapVolume.origin,
-        direction: labelmapVolume.direction,
-      },
-      segments: segmentationState.segments,
-    }));
-    
+    localStorage.setItem(
+      "savedSegmentation",
+      JSON.stringify({
+        segmentationId: segmentationState.segmentationId,
+        scalarData: Array.from(scalarData),
+        volumeMetadata: {
+          dimensions: labelmapVolume.dimensions,
+          spacing: labelmapVolume.spacing,
+          origin: labelmapVolume.origin,
+          direction: labelmapVolume.direction,
+        },
+        segments: segmentationState.segments,
+      })
+    );
+
     console.log("Segmentation saved");
-    
   } catch (error) {
     console.error("Error saving segmentation:", error);
   }
@@ -614,7 +642,7 @@ const toSave = async () => {
 
 onMounted(async () => {
   await setupViewer();
-  
+
   // Initialize OpenCV
   try {
     cvReady = await cv;
@@ -661,7 +689,7 @@ onUnmounted(() => {
   margin: 5px;
   padding: 10px;
   cursor: pointer;
-  background-color: #4CAF50;
+  background-color: #4caf50;
   color: white;
   border: none;
   border-radius: 4px;
@@ -669,7 +697,7 @@ onUnmounted(() => {
 }
 
 .save-contours {
-  background-color: #2196F3;
+  background-color: #2196f3;
 }
 
 .save:hover,
@@ -689,7 +717,7 @@ onUnmounted(() => {
   padding: 10px;
   background-color: white;
   border-radius: 6px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .segment-controls label {
