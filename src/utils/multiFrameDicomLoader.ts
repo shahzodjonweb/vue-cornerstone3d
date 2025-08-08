@@ -59,11 +59,28 @@ function extractFramePixelData(
   // Calculate frame offset
   const frameOffset = offset + (frameIndex * frameSize);
   
+  // Debug logging for frame extraction
+  console.log(`Extracting frame ${frameIndex}:`, {
+    frameSize,
+    bytesPerPixel,
+    offset,
+    frameOffset,
+    totalPixelDataLength: pixelData.length,
+    extractionEnd: frameOffset + frameSize,
+    firstFewBytes: Array.from(pixelData.slice(frameOffset, frameOffset + 10)),
+    rows,
+    columns,
+    expectedPixels: rows * columns
+  });
+  
   // Extract frame data
   const frameData = new Uint8Array(frameSize);
   for (let i = 0; i < frameSize; i++) {
     if (frameOffset + i < pixelData.length) {
       frameData[i] = pixelData[frameOffset + i];
+    } else {
+      console.warn(`Pixel data truncated at index ${frameOffset + i}, total length: ${pixelData.length}`);
+      break;
     }
   }
   
@@ -133,14 +150,40 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
       if (bitsAllocated === 8) {
         pixelDataTypedArray = new Uint8Array(framePixelData);
       } else if (bitsAllocated === 16) {
+        // For 16-bit data, we need to handle byte order correctly
+        // DICOM is typically little-endian, but let's create the array properly
+        const uint8Array = new Uint8Array(framePixelData);
+        const pixelCount = uint8Array.length / 2;
+        
         if (pixelRepresentation === 0) {
-          pixelDataTypedArray = new Uint16Array(framePixelData);
+          pixelDataTypedArray = new Uint16Array(pixelCount);
+          for (let i = 0; i < pixelCount; i++) {
+            // Little-endian: low byte first, high byte second
+            pixelDataTypedArray[i] = uint8Array[i * 2] | (uint8Array[i * 2 + 1] << 8);
+          }
         } else {
-          pixelDataTypedArray = new Int16Array(framePixelData);
+          pixelDataTypedArray = new Int16Array(pixelCount);
+          for (let i = 0; i < pixelCount; i++) {
+            // Little-endian: low byte first, high byte second
+            const unsigned = uint8Array[i * 2] | (uint8Array[i * 2 + 1] << 8);
+            // Convert to signed 16-bit
+            pixelDataTypedArray[i] = unsigned > 32767 ? unsigned - 65536 : unsigned;
+          }
         }
       } else {
         throw new Error(`Unsupported bits allocated: ${bitsAllocated}`);
       }
+      
+      // Debug logging - sample some pixel values
+      console.log(`Frame ${frameIndex} pixel data info:`, {
+        totalPixels: pixelDataTypedArray.length,
+        expectedPixels: rows * columns,
+        bitsAllocated,
+        pixelRepresentation,
+        arrayType: pixelDataTypedArray.constructor.name,
+        firstTenPixels: Array.from(pixelDataTypedArray.slice(0, 10)),
+        lastTenPixels: Array.from(pixelDataTypedArray.slice(-10))
+      });
       
       // Calculate min and max pixel values
       let minPixelValue = Number.MAX_VALUE;
@@ -152,8 +195,45 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         if (value > maxPixelValue) maxPixelValue = value;
       }
       
+      console.log(`Frame ${frameIndex} pixel value range:`, {
+        minPixelValue,
+        maxPixelValue,
+        rescaleSlope,
+        rescaleIntercept,
+        windowCenter,
+        windowWidth,
+        minAfterRescale: minPixelValue * rescaleSlope + rescaleIntercept,
+        maxAfterRescale: maxPixelValue * rescaleSlope + rescaleIntercept
+      });
+      
       // Determine if image is color
       const isColor = photometricInterpretation === 'RGB' || samplesPerPixel > 1;
+      
+      // Apply windowing validation - ensure values are reasonable
+      let finalWindowCenter = windowCenter;
+      let finalWindowWidth = windowWidth;
+      
+      // Calculate reasonable windowing if the provided values seem extreme
+      const pixelRange = maxPixelValue - minPixelValue;
+      const rescaledMin = minPixelValue * rescaleSlope + rescaleIntercept;
+      const rescaledMax = maxPixelValue * rescaleSlope + rescaleIntercept;
+      const rescaledRange = rescaledMax - rescaledMin;
+      
+      // If windowing seems unreasonable compared to pixel data, recalculate
+      if (!finalWindowCenter || !finalWindowWidth || 
+          finalWindowWidth > rescaledRange * 3 || 
+          finalWindowCenter < rescaledMin - rescaledRange ||
+          finalWindowCenter > rescaledMax + rescaledRange) {
+        
+        finalWindowCenter = (rescaledMin + rescaledMax) / 2;
+        finalWindowWidth = rescaledRange * 1.2; // Add some padding
+        
+        console.warn(`Windowing values seemed extreme, recalculated:`, {
+          original: { center: windowCenter, width: windowWidth },
+          recalculated: { center: finalWindowCenter, width: finalWindowWidth },
+          pixelRange: { min: rescaledMin, max: rescaledMax, range: rescaledRange }
+        });
+      }
       
       // Create the image object
       const image: Types.IImage = {
@@ -162,31 +242,40 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         maxPixelValue,
         slope: rescaleSlope,
         intercept: rescaleIntercept,
-        windowCenter: windowCenter,
-        windowWidth: windowWidth,
+        windowCenter: finalWindowCenter,
+        windowWidth: finalWindowWidth,
         rows,
         columns,
         height: rows,
         width: columns,
         color: isColor,
         rgba: false,
-        numComps: samplesPerPixel,
+        // numComps: samplesPerPixel, // Not part of IImage interface
         render: undefined, // Will be set by Cornerstone
         columnPixelSpacing: pixelSpacing[0],
         rowPixelSpacing: pixelSpacing[1],
         sliceThickness,
         invert: photometricInterpretation === 'MONOCHROME1',
         sizeInBytes: pixelDataTypedArray.byteLength,
-        getPixelData: () => pixelDataTypedArray,
-        getCanvas: undefined, // Optional, not needed for basic functionality
+        getPixelData: () => {
+          // Add validation logging for pixel data access
+          console.log(`getPixelData called for frame ${frameIndex}:`, {
+            arrayType: pixelDataTypedArray.constructor.name,
+            length: pixelDataTypedArray.length,
+            firstPixels: Array.from(pixelDataTypedArray.slice(0, 5)),
+            someMiddlePixels: Array.from(pixelDataTypedArray.slice(Math.floor(pixelDataTypedArray.length/2), Math.floor(pixelDataTypedArray.length/2) + 5))
+          });
+          return pixelDataTypedArray;
+        },
+        getCanvas: undefined as any, // Optional, not needed for basic functionality
         decodeTimeInMS: 0,
         loadTimeInMS: 0,
         
         // Additional properties that might be needed
-        data: undefined,
+        // data: undefined, // Not part of IImage interface
         sharedCacheKey: undefined,
-        hasPixelSpacing: true,
-        isPreScaled: false,
+        // hasPixelSpacing: true, // Not part of IImage interface
+        // isPreScaled: false, // Not part of IImage interface
         
         // Frame-specific metadata
         frameNumber: frameIndex,
@@ -196,8 +285,19 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         
         // Reference to original data
         cachedLut: undefined,
-        voiLUTFunction: 'LINEAR',
+        voiLUTFunction: 'LINEAR' as any,
       };
+      
+      console.log(`Final image object for frame ${frameIndex}:`, {
+        windowCenter: image.windowCenter,
+        windowWidth: image.windowWidth,
+        minPixelValue: image.minPixelValue,
+        maxPixelValue: image.maxPixelValue,
+        slope: image.slope,
+        intercept: image.intercept,
+        photometricInterpretation,
+        invert: image.invert
+      });
       
       resolve(image);
     } catch (error) {

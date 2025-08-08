@@ -98,6 +98,9 @@ import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader"
 // DICOM file URL
 const DICOM_URL =
   "https://s3.us-east-2.amazonaws.com/unitlab-storage/private/companies/94aaff6b-a11f-4456-b11c-15661c920b4e/datasources/df7844e73a0046ae9b27304a1166ca31/1e934214441e4c14b9f90c7f0421ce21.dcm?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAXTXE3VALZNOVFWE4%2F20250808%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20250808T133513Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=17f20a8a8ec02a88445b346e9504133791e5a250c14b94846f1f93ded9fd4edf";
+
+// Debug flag to test with standard DICOM loader instead of custom
+const USE_STANDARD_LOADER = false;
 // Import custom multi-frame DICOM loader
 import {
   initializeMultiFrameLoader,
@@ -166,10 +169,39 @@ async function loadDicomFromURL() {
     const columns = dataSet.uint16("x00280011") || 512;
     const pixelSpacing = dataSet.string("x00280030");
     const sliceThickness = dataSet.floatString("x00180050") || 1;
-    const windowCenter = dataSet.floatString("x00281050") || 40;
-    const windowWidth = dataSet.floatString("x00281051") || 400;
     const rescaleSlope = dataSet.floatString("x00281053") || 1;
     const rescaleIntercept = dataSet.floatString("x00281052") || 0;
+    
+    // Extract windowing values - handle multiple values if present
+    let windowCenter, windowWidth;
+    const windowCenterStr = dataSet.string("x00281050");
+    const windowWidthStr = dataSet.string("x00281051");
+    
+    if (windowCenterStr && windowWidthStr) {
+      // Handle multiple window center/width values (separated by backslashes)
+      const centerValues = windowCenterStr.split("\\").map(v => parseFloat(v));
+      const widthValues = windowWidthStr.split("\\").map(v => parseFloat(v));
+      
+      // Use the first valid pair, or find the best one for soft tissue
+      windowCenter = centerValues[0] || 40;
+      windowWidth = widthValues[0] || 400;
+      
+      // If multiple presets, try to find a good soft tissue window
+      for (let i = 0; i < centerValues.length && i < widthValues.length; i++) {
+        const center = centerValues[i];
+        const width = widthValues[i];
+        // Look for typical soft tissue windowing (center around 40-60, width around 350-400)
+        if (center >= 30 && center <= 80 && width >= 300 && width <= 500) {
+          windowCenter = center;
+          windowWidth = width;
+          break;
+        }
+      }
+    } else {
+      // No windowing in DICOM, we'll calculate it from pixel data later
+      windowCenter = null;
+      windowWidth = null;
+    }
     const bitsAllocated = dataSet.uint16("x00280100") || 16;
     const bitsStored = dataSet.uint16("x00280101") || 16;
     const highBit = dataSet.uint16("x00280102") || 15;
@@ -193,8 +225,12 @@ async function loadDicomFromURL() {
       columns,
       pixelSpacing: pixelSpacingArray,
       sliceThickness,
-      windowCenter,
-      windowWidth,
+      originalWindowCenter: windowCenter,
+      originalWindowWidth: windowWidth,
+      rescaleSlope,
+      rescaleIntercept,
+      bitsAllocated,
+      pixelRepresentation
     });
 
     // Find the pixel data element
@@ -206,6 +242,31 @@ async function loadDicomFromURL() {
     // Generate a unique file ID
     const fileId = `dicom_${Date.now()}`;
 
+    // Calculate automatic windowing if not present in DICOM
+    let finalWindowCenter: number = windowCenter || 40;
+    let finalWindowWidth: number = windowWidth || 400;
+    
+    if (windowCenter === null || windowWidth === null) {
+      console.log("No windowing found in DICOM, using reasonable defaults for 16-bit medical imaging...");
+      
+      // For 16-bit medical images without windowing, use reasonable defaults
+      // Based on the actual pixel values we're seeing (0-1500 range)
+      if (bitsAllocated === 16) {
+        // For 16-bit medical imaging, use a center around middle of typical range
+        // and width to cover the full range with good contrast
+        finalWindowCenter = 800; // Center for 16-bit range
+        finalWindowWidth = 1600; // Width to show full range with good contrast
+      } else {
+        // For 8-bit images
+        finalWindowCenter = 128;
+        finalWindowWidth = 256;
+      }
+      
+      console.log(`Using default windowing for ${bitsAllocated}-bit image: Center=${finalWindowCenter}, Width=${finalWindowWidth}`);
+    } else {
+      console.log(`Using DICOM windowing: Center=${finalWindowCenter}, Width=${finalWindowWidth}`);
+    }
+
     // Store the DICOM data for the custom loader
     storeDicomData(fileId, {
       dataSet,
@@ -215,8 +276,8 @@ async function loadDicomFromURL() {
       columns,
       pixelSpacing: pixelSpacingArray,
       sliceThickness,
-      windowCenter,
-      windowWidth,
+      windowCenter: finalWindowCenter,
+      windowWidth: finalWindowWidth,
       rescaleSlope,
       rescaleIntercept,
       bitsAllocated,
@@ -421,7 +482,14 @@ const setupViewer = async () => {
   initializeMultiFrameLoader();
 
   // Load DICOM file from URL
-  const imageIds = await loadDicomFromURL();
+  let imageIds;
+  if (USE_STANDARD_LOADER) {
+    // Test with standard DICOM loader for comparison
+    console.log("Using standard DICOM loader for testing");
+    imageIds = [`wadouri:${DICOM_URL}`];
+  } else {
+    imageIds = await loadDicomFromURL();
+  }
 
   const renderingEngineId = "myRenderingEngine";
   renderingEngine = new RenderingEngine(renderingEngineId);
