@@ -40,10 +40,52 @@
       <canvas ref="canvasOverlayCoronal" class="canvas-overlay" />
     </div>
   </div>
+
+  <div class="frame-controls">
+    <div class="viewport-selector">
+      <label>Viewport:</label>
+      <select
+        v-model="selectedViewport"
+        @change="onViewportChange"
+        class="viewport-select"
+      >
+        <option value="axial">Axial</option>
+        <option value="sagittal">Sagittal</option>
+        <option value="coronal">Coronal</option>
+      </select>
+    </div>
+    <button
+      @click="previousFrame"
+      :disabled="currentFrameIndex <= 0"
+      class="frame-btn"
+    >
+      ← Prev
+    </button>
+    <div class="frame-slider-container">
+      <input
+        type="range"
+        v-model.number="currentFrameIndex"
+        @input="navigateToFrame(currentFrameIndex)"
+        :min="0"
+        :max="maxFrameIndex"
+        class="frame-slider"
+      />
+      <span class="frame-info">
+        Frame {{ currentFrameIndex + 1 }} / {{ totalFrames }}
+      </span>
+    </div>
+    <button
+      @click="nextFrame"
+      :disabled="currentFrameIndex >= maxFrameIndex"
+      class="frame-btn"
+    >
+      Next →
+    </button>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
   RenderingEngine,
   Enums,
@@ -61,6 +103,7 @@ import {
   Enums as csToolsEnums,
   addTool,
   BrushTool,
+  StackScrollTool,
   segmentation,
 } from "@cornerstonejs/tools";
 import { api } from "dicomweb-client";
@@ -92,6 +135,9 @@ const canvasOverlayCoronal = ref<HTMLCanvasElement | null>(null);
 const running = ref(false);
 const activeSegmentIndex = ref(1);
 const currentFrameIndex = ref(0);
+const totalFrames = ref(1);
+const maxFrameIndex = computed(() => totalFrames.value - 1);
+const selectedViewport = ref("axial");
 let segmentationId = "MY_SEGMENTATION_ID";
 const StudyInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463";
@@ -130,6 +176,157 @@ let toolGroupId: string;
 let viewportIdAxial = "CT_AXIAL";
 let viewportIdSagittal = "CT_SAGITTAL";
 let viewportIdCoronal = "CT_CORONAL";
+
+// Get current viewport ID based on selection
+const getCurrentViewportId = () => {
+  switch (selectedViewport.value) {
+    case "sagittal":
+      return viewportIdSagittal;
+    case "coronal":
+      return viewportIdCoronal;
+    default:
+      return viewportIdAxial;
+  }
+};
+
+// Calculate frame index from camera focal point
+const calculateFrameIndexFromCamera = (viewport: any, viewportType: string) => {
+  if (!viewport || !viewport.getCamera) return 0;
+
+  const camera = viewport.getCamera();
+  const currentVolume = cache.getVolume(volumeId);
+
+  if (!currentVolume || !camera) return 0;
+
+  const { spacing, origin, dimensions } = currentVolume;
+  const { focalPoint } = camera;
+
+  let frameIndex = 0;
+
+  switch (viewportType) {
+    case "sagittal":
+      // X-axis: calculate frame from X position
+      frameIndex = Math.round((focalPoint[0] - origin[0]) / spacing[0]);
+      frameIndex = Math.max(0, Math.min(frameIndex, dimensions[0] - 1));
+      break;
+    case "coronal":
+      // Y-axis: calculate frame from Y position
+      frameIndex = Math.round((focalPoint[1] - origin[1]) / spacing[1]);
+      frameIndex = Math.max(0, Math.min(frameIndex, dimensions[1] - 1));
+      break;
+    default:
+      // Axial - Z-axis: calculate frame from Z position
+      frameIndex = Math.round((focalPoint[2] - origin[2]) / spacing[2]);
+      frameIndex = Math.max(0, Math.min(frameIndex, dimensions[2] - 1));
+  }
+
+  return frameIndex;
+};
+
+// Update frame count and index when viewport changes
+const onViewportChange = () => {
+  if (!renderingEngine) return;
+
+  const viewport = renderingEngine.getViewport(getCurrentViewportId()) as any;
+  if (!viewport) return;
+
+  const currentVolume = cache.getVolume(volumeId);
+  if (currentVolume && currentVolume.dimensions) {
+    // Update total frames based on viewport orientation
+    switch (selectedViewport.value) {
+      case "sagittal":
+        totalFrames.value = currentVolume.dimensions[0]; // X-axis
+        break;
+      case "coronal":
+        totalFrames.value = currentVolume.dimensions[1]; // Y-axis
+        break;
+      default:
+        totalFrames.value = currentVolume.dimensions[2]; // Z-axis (axial)
+    }
+  }
+
+  // Update current frame index for the selected viewport
+  currentFrameIndex.value = calculateFrameIndexFromCamera(
+    viewport,
+    selectedViewport.value
+  );
+};
+
+// Frame navigation functions
+const navigateToFrame = (frameIndex: number) => {
+  if (!renderingEngine) return;
+
+  const viewportId = getCurrentViewportId();
+  const viewport = renderingEngine.getViewport(viewportId) as any;
+  if (!viewport) return;
+
+  // Ensure frame index is within bounds
+  const targetFrame = Math.max(0, Math.min(frameIndex, maxFrameIndex.value));
+
+  if (viewport.setImageIdIndex) {
+    // For stack viewport
+    viewport.setImageIdIndex(targetFrame);
+  } else if (viewport.setCamera) {
+    // For volume viewport - adjust focal point based on viewport orientation
+    const camera = viewport.getCamera();
+    const { position, viewUp } = camera;
+    const currentVolume = cache.getVolume(volumeId);
+
+    if (currentVolume) {
+      const spacing = currentVolume.spacing;
+      const origin = currentVolume.origin;
+      const direction = currentVolume.direction;
+
+      let newFocalPoint;
+      switch (selectedViewport.value) {
+        case "sagittal":
+          // Move along X-axis
+          newFocalPoint = [
+            origin[0] + targetFrame * spacing[0],
+            camera.focalPoint[1],
+            camera.focalPoint[2],
+          ];
+          break;
+        case "coronal":
+          // Move along Y-axis
+          newFocalPoint = [
+            camera.focalPoint[0],
+            origin[1] + targetFrame * spacing[1],
+            camera.focalPoint[2],
+          ];
+          break;
+        default:
+          // Axial - move along Z-axis
+          newFocalPoint = [
+            camera.focalPoint[0],
+            camera.focalPoint[1],
+            origin[2] + targetFrame * spacing[2],
+          ];
+      }
+
+      viewport.setCamera({
+        focalPoint: newFocalPoint,
+        position,
+        viewUp,
+      });
+    }
+  }
+
+  viewport.render();
+  currentFrameIndex.value = targetFrame;
+};
+
+const previousFrame = () => {
+  if (currentFrameIndex.value > 0) {
+    navigateToFrame(currentFrameIndex.value - 1);
+  }
+};
+
+const nextFrame = () => {
+  if (currentFrameIndex.value < maxFrameIndex.value) {
+    navigateToFrame(currentFrameIndex.value + 1);
+  }
+};
 
 const setupViewer = async () => {
   if (running.value) return;
@@ -200,12 +397,25 @@ const setupViewer = async () => {
     },
   ]);
 
+  // Add tools
   addTool(BrushTool);
+  addTool(StackScrollTool);
+
   toolGroupId = "CT_TOOLGROUP";
   toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
+
+  // Add both tools to the tool group
   toolGroup.addTool(BrushTool.toolName);
+  toolGroup.addTool(StackScrollTool.toolName);
+
+  // Activate BrushTool for drawing with primary mouse button
   toolGroup.setToolActive(BrushTool.toolName, {
     bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
+  });
+
+  // Activate StackScrollTool for frame navigation with mouse wheel
+  toolGroup.setToolActive(StackScrollTool.toolName, {
+    bindings: [{ mouseButton: csToolsEnums.MouseBindings.Wheel }],
   });
 
   toolGroup.addViewport(viewportIdAxial, renderingEngineId);
@@ -240,6 +450,58 @@ const setupViewer = async () => {
   });
 
   renderingEngine.render();
+
+  // Initialize total frames after volume is loaded
+  const loadedVolume = cache.getVolume(volumeId);
+  if (loadedVolume && loadedVolume.dimensions) {
+    // For axial view, the depth (z-axis) represents the number of frames
+    totalFrames.value = loadedVolume.dimensions[2];
+  }
+
+  // Set up event listeners for frame changes on all viewports
+  const handleCameraModified = () => {
+    // Get the currently selected viewport
+    const viewportId = getCurrentViewportId();
+    const viewport = renderingEngine.getViewport(viewportId) as any;
+
+    if (viewport) {
+      // Calculate the current frame from camera position
+      const newFrameIndex = calculateFrameIndexFromCamera(
+        viewport,
+        selectedViewport.value
+      );
+
+      // Update if different from current
+      if (newFrameIndex !== currentFrameIndex.value) {
+        currentFrameIndex.value = newFrameIndex;
+      }
+    }
+  };
+
+  // Listen for camera changes on all viewports
+  const element = renderingEngine.getViewport(viewportIdAxial)?.element;
+  if (element) {
+    element.addEventListener(
+      Enums.Events.CAMERA_MODIFIED,
+      handleCameraModified
+    );
+  }
+
+  const elementSag = renderingEngine.getViewport(viewportIdSagittal)?.element;
+  if (elementSag) {
+    elementSag.addEventListener(
+      Enums.Events.CAMERA_MODIFIED,
+      handleCameraModified
+    );
+  }
+
+  const elementCor = renderingEngine.getViewport(viewportIdCoronal)?.element;
+  if (elementCor) {
+    elementCor.addEventListener(
+      Enums.Events.CAMERA_MODIFIED,
+      handleCameraModified
+    );
+  }
 
   // Setup frame change listeners for contour rendering
   setTimeout(() => {
@@ -436,9 +698,7 @@ const setupFrameChangeListener = () => {
         handleImageRendered
       );
     }
-
-  } catch (error) {
-  }
+  } catch (error) {}
 };
 
 // Helper function to convert contours back to labelmap
@@ -448,7 +708,6 @@ const convertContoursToLabelmap = async (contoursData: any) => {
   const { width, height, depth } = dimensions;
   const totalVoxels = width * height * depth;
   const scalarData = new Uint8Array(totalVoxels);
-
 
   // Process each slice with contours
   for (const sliceInfo of sliceContours) {
@@ -462,7 +721,7 @@ const convertContoursToLabelmap = async (contoursData: any) => {
     for (const segmentData of segmentsList) {
       const segmentId = segmentData.segmentId || segmentData.segmentIndex || 1;
       const segmentContours = segmentData.contours;
-      
+
       // Process each contour in this segment
       for (const contourObj of segmentContours) {
         const contourPoints = contourObj.points;
@@ -480,25 +739,21 @@ const convertContoursToLabelmap = async (contoursData: any) => {
             points.push(pt.y);
           }
         }
-        
+
         if (points.length < 6) continue; // Need at least 3 points (6 values)
-        
+
         const pointsMat = cv.matFromArray(
           points.length / 2,
           1,
           cv.CV_32SC2,
           points
         );
-        
+
         const contourVector = new cv.MatVector();
         contourVector.push_back(pointsMat);
 
         // Fill the contour with the segment index value
-        cv.fillPoly(
-          mask,
-          contourVector,
-          new cv.Scalar(segmentId)
-        );
+        cv.fillPoly(mask, contourVector, new cv.Scalar(segmentId));
 
         pointsMat.delete();
         contourVector.delete();
@@ -527,22 +782,27 @@ const restoreSegmentation = async () => {
   if (savedContoursJson) {
     try {
       const contoursData = JSON.parse(savedContoursJson);
-      
+
       // Convert contours to labelmap
       const scalarData = await convertContoursToLabelmap(contoursData);
-      
+
       // Remove existing segmentation if it exists
       try {
-        const existingSegmentation = segmentation.state.getSegmentation(segmentationId);
+        const existingSegmentation =
+          segmentation.state.getSegmentation(segmentationId);
         if (existingSegmentation) {
           // Remove from tool group first
-          const representations = segmentation.state.getSegmentationRepresentations(toolGroupId);
+          const representations =
+            segmentation.state.getSegmentationRepresentations(toolGroupId);
           for (const rep of representations || []) {
             if (rep.segmentationId === segmentationId) {
-              await segmentation.removeSegmentationRepresentations(toolGroupId, {
-                segmentationId,
-                type: rep.type
-              });
+              await segmentation.removeSegmentationRepresentations(
+                toolGroupId,
+                {
+                  segmentationId,
+                  type: rep.type,
+                }
+              );
             }
           }
           // Remove the segmentation
@@ -579,7 +839,7 @@ const restoreSegmentation = async () => {
         // Set the scalar data using voxelManager
         const totalVoxels = scalarData.length;
         let nonZeroCount = 0;
-        
+
         for (let i = 0; i < totalVoxels; i++) {
           if (scalarData[i] > 0) {
             newVolume.voxelManager.setAtIndex(i, scalarData[i]);
@@ -803,7 +1063,6 @@ const toSave2 = async () => {
     const allSliceContours = [];
     let processedSlices = 0;
 
-
     // Iterate through all slices
     for (let sliceIndex = 0; sliceIndex < depth; sliceIndex++) {
       const sliceStart = sliceIndex * sliceSize;
@@ -820,7 +1079,6 @@ const toSave2 = async () => {
 
       // Only process slices that have segmentation data
       if (hasSegmentation) {
-
         // Find contours using OpenCV
         const contourResults = await findContoursFromSegmentation(
           sliceData,
@@ -839,7 +1097,6 @@ const toSave2 = async () => {
       }
     }
 
-
     // Save all slice contours to localStorage
     localStorage.setItem(
       "segmentationContours",
@@ -851,8 +1108,7 @@ const toSave2 = async () => {
     );
 
     // Log summary
-    allSliceContours.forEach((slice) => {
-    });
+    allSliceContours.forEach((slice) => {});
 
     return allSliceContours;
   } catch (error) {
@@ -982,8 +1238,31 @@ const toSave = async () => {
         segments: segmentationState.segments,
       })
     );
+  } catch (error) {}
+};
 
-  } catch (error) {
+// Keyboard event handler
+const handleKeyDown = (event: KeyboardEvent) => {
+  // Check if any input element is focused
+  const activeElement = document.activeElement;
+  if (
+    activeElement &&
+    (activeElement.tagName === "INPUT" || activeElement.tagName === "TEXTAREA")
+  ) {
+    return; // Don't handle keys when typing in inputs
+  }
+
+  switch (event.key) {
+    case "ArrowLeft":
+    case "ArrowUp":
+      event.preventDefault();
+      previousFrame();
+      break;
+    case "ArrowRight":
+    case "ArrowDown":
+      event.preventDefault();
+      nextFrame();
+      break;
   }
 };
 
@@ -996,9 +1275,15 @@ onMounted(async () => {
   } catch (error) {
     // Failed to initialize OpenCV
   }
+
+  // Add keyboard event listener
+  window.addEventListener("keydown", handleKeyDown);
 });
 
 onUnmounted(() => {
+  // Remove keyboard event listener
+  window.removeEventListener("keydown", handleKeyDown);
+
   if (renderingEngine) {
     renderingEngine.destroy();
   }
@@ -1109,5 +1394,138 @@ onUnmounted(() => {
   font-weight: 500;
   color: #666;
   padding: 0 5px;
+}
+
+/* Frame Controls Styling */
+.frame-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+  padding: 15px;
+  background: #2a2a2a;
+  border-radius: 8px;
+  margin: 15px auto 10px;
+  max-width: 800px;
+}
+
+.frame-btn {
+  padding: 8px 16px;
+  background: #3a3a3a;
+  color: #ffffff !important;
+  border: 1px solid #555;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s;
+  min-width: 80px;
+}
+
+.frame-btn:hover:not(:disabled) {
+  background: #4a4a4a;
+  border-color: #666;
+  color: #ffffff !important;
+}
+
+.frame-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: #999 !important;
+}
+
+.frame-slider-container {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  flex: 1;
+  max-width: 500px;
+}
+
+.frame-slider {
+  flex: 1;
+  height: 6px;
+  background: #3a3a3a;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.frame-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: #4caf50;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.frame-slider::-webkit-slider-thumb:hover {
+  background: #66bb6a;
+}
+
+.frame-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: #4caf50;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  transition: background 0.3s;
+}
+
+.frame-slider::-moz-range-thumb:hover {
+  background: #66bb6a;
+}
+
+.frame-info {
+  color: #fff;
+  font-size: 14px;
+  min-width: 120px;
+  text-align: center;
+  background: #3a3a3a;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #555;
+}
+
+/* Viewport Selector Styling */
+.viewport-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 15px;
+}
+
+.viewport-selector label {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.viewport-select {
+  padding: 8px 12px;
+  background: #3a3a3a;
+  color: #fff;
+  border: 1px solid #555;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s;
+  min-width: 100px;
+}
+
+.viewport-select:hover {
+  background: #4a4a4a;
+  border-color: #666;
+}
+
+.viewport-select:focus {
+  outline: none;
+  border-color: #4caf50;
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
 }
 </style>
