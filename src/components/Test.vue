@@ -126,6 +126,7 @@ async function createImageIdsAndCacheMetaData() {
 let renderingEngine: RenderingEngine;
 let toolGroup: any;
 let volumeId: string;
+let toolGroupId: string;
 let viewportIdAxial = "CT_AXIAL";
 let viewportIdSagittal = "CT_SAGITTAL";
 let viewportIdCoronal = "CT_CORONAL";
@@ -139,7 +140,6 @@ const setupViewer = async () => {
     !elementRefSagittal.value ||
     !elementRefCoronal.value
   ) {
-    console.error("Viewport DOM elements are missing");
     return;
   }
 
@@ -201,7 +201,7 @@ const setupViewer = async () => {
   ]);
 
   addTool(BrushTool);
-  const toolGroupId = "CT_TOOLGROUP";
+  toolGroupId = "CT_TOOLGROUP";
   toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
   toolGroup.addTool(BrushTool.toolName);
   toolGroup.setToolActive(BrushTool.toolName, {
@@ -268,7 +268,6 @@ const changeActiveSegment = async () => {
     segmentationId,
     activeSegmentIndex.value
   );
-  console.log(`Active segment changed to: ${activeSegmentIndex.value}`);
 };
 
 // Get current active segment
@@ -438,42 +437,208 @@ const setupFrameChangeListener = () => {
       );
     }
 
-    console.log("Frame change listeners setup complete");
   } catch (error) {
-    console.error("Error setting up frame change listeners:", error);
   }
+};
+
+// Helper function to convert contours back to labelmap
+const convertContoursToLabelmap = async (contoursData: any) => {
+  const cv = await waitForOpenCV();
+  const { dimensions, sliceContours } = contoursData;
+  const { width, height, depth } = dimensions;
+  const totalVoxels = width * height * depth;
+  const scalarData = new Uint8Array(totalVoxels);
+
+
+  // Process each slice with contours
+  for (const sliceInfo of sliceContours) {
+    const { sliceIndex, contours: segmentsList } = sliceInfo;
+    const sliceStart = sliceIndex * width * height;
+
+    // Create a mask for this slice
+    const mask = new cv.Mat.zeros(height, width, cv.CV_8UC1);
+
+    // Draw and fill each segment's contours
+    for (const segmentData of segmentsList) {
+      const segmentId = segmentData.segmentId || segmentData.segmentIndex || 1;
+      const segmentContours = segmentData.contours;
+      
+      // Process each contour in this segment
+      for (const contourObj of segmentContours) {
+        const contourPoints = contourObj.points;
+        if (!contourPoints || contourPoints.length < 3) continue;
+
+        // Convert points to OpenCV format
+        const points = [];
+        for (const pt of contourPoints) {
+          // Handle both [x,y] array format and {x,y} object format
+          if (Array.isArray(pt)) {
+            points.push(pt[0]);
+            points.push(pt[1]);
+          } else if (pt.x !== undefined && pt.y !== undefined) {
+            points.push(pt.x);
+            points.push(pt.y);
+          }
+        }
+        
+        if (points.length < 6) continue; // Need at least 3 points (6 values)
+        
+        const pointsMat = cv.matFromArray(
+          points.length / 2,
+          1,
+          cv.CV_32SC2,
+          points
+        );
+        
+        const contourVector = new cv.MatVector();
+        contourVector.push_back(pointsMat);
+
+        // Fill the contour with the segment index value
+        cv.fillPoly(
+          mask,
+          contourVector,
+          new cv.Scalar(segmentId)
+        );
+
+        pointsMat.delete();
+        contourVector.delete();
+      }
+    }
+
+    // Copy mask data to scalar array
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const maskValue = mask.ucharPtr(y, x)[0];
+        const volumeIndex = sliceStart + y * width + x;
+        scalarData[volumeIndex] = maskValue;
+      }
+    }
+
+    mask.delete();
+  }
+
+  return scalarData;
 };
 
 const restoreSegmentation = async () => {
   // First check for saved contours (new approach)
-  const savedContours = localStorage.getItem("segmentationContours");
+  const savedContoursJson = localStorage.getItem("segmentationContours");
 
-  if (savedContours) {
-    console.log("Restoring contours as frame-specific annotations...");
-    console.log("Saved contours:", JSON.parse(savedContours));
+  if (savedContoursJson) {
+    try {
+      const contoursData = JSON.parse(savedContoursJson);
+      
+      // Convert contours to labelmap
+      const scalarData = await convertContoursToLabelmap(contoursData);
+      
+      // Remove existing segmentation if it exists
+      try {
+        const existingSegmentation = segmentation.state.getSegmentation(segmentationId);
+        if (existingSegmentation) {
+          // Remove from tool group first
+          const representations = segmentation.state.getSegmentationRepresentations(toolGroupId);
+          for (const rep of representations || []) {
+            if (rep.segmentationId === segmentationId) {
+              await segmentation.removeSegmentationRepresentations(toolGroupId, {
+                segmentationId,
+                type: rep.type
+              });
+            }
+          }
+          // Remove the segmentation
+          segmentation.state.removeSegmentation(segmentationId);
+        }
+      } catch (e) {
+        // No existing segmentation to remove
+      }
 
-    // Setup frame change listener
-    setupFrameChangeListener();
-    console.log(`Rendering contours for frame ${0}`);
+      // Remove the volume from cache if it exists
+      try {
+        const existingVolume = cache.getVolume(segmentationId);
+        if (existingVolume) {
+          cache.removeVolumeLoadObject(segmentationId);
+        }
+      } catch (e) {
+        // No existing volume to remove
+      }
 
-    // Render contours for current frame (start with frame 0)
-    renderContoursForFrame(67, canvasOverlayAxial.value);
+      // Get the volume ID from the current volume
+      const currentVolume = cache.getVolume(volumeId);
+      if (!currentVolume) {
+        return;
+      }
 
-    // For other viewports, render their respective frames
-    renderContoursForFrame(0, canvasOverlaySagittal.value);
-    renderContoursForFrame(0, canvasOverlayCoronal.value);
+      // Create a new derived labelmap volume
+      await volumeLoader.createAndCacheDerivedLabelmapVolume(volumeId, {
+        volumeId: segmentationId,
+      });
 
-    console.log("Contours restored successfully");
+      // Get the created volume and update its scalar data
+      const newVolume = cache.getVolume(segmentationId);
+      if (newVolume && newVolume.voxelManager) {
+        // Set the scalar data using voxelManager
+        const totalVoxels = scalarData.length;
+        let nonZeroCount = 0;
+        
+        for (let i = 0; i < totalVoxels; i++) {
+          if (scalarData[i] > 0) {
+            newVolume.voxelManager.setAtIndex(i, scalarData[i]);
+            nonZeroCount++;
+          }
+        }
+      }
+
+      // Add the segmentation
+      await segmentation.addSegmentations([
+        {
+          segmentationId,
+          representation: {
+            type: csToolsEnums.SegmentationRepresentations.Labelmap,
+            data: { volumeId: segmentationId },
+          },
+        },
+      ]);
+
+      // Add labelmap representation to viewport map (same as in setupViewer)
+      await segmentation.addLabelmapRepresentationToViewportMap({
+        [viewportIdAxial]: [
+          {
+            segmentationId,
+            type: csToolsEnums.SegmentationRepresentations.Labelmap,
+          },
+        ],
+        [viewportIdSagittal]: [
+          {
+            segmentationId,
+            type: csToolsEnums.SegmentationRepresentations.Labelmap,
+          },
+        ],
+        [viewportIdCoronal]: [
+          {
+            segmentationId,
+            type: csToolsEnums.SegmentationRepresentations.Labelmap,
+          },
+        ],
+      });
+
+      // Clear any overlay canvases
+      if (canvasOverlayAxial.value) clearCanvas(canvasOverlayAxial.value);
+      if (canvasOverlaySagittal.value) clearCanvas(canvasOverlaySagittal.value);
+      if (canvasOverlayCoronal.value) clearCanvas(canvasOverlayCoronal.value);
+
+      // Render the viewports
+      renderingEngine.render();
+    } catch (error) {
+      // Error restoring segmentation
+    }
     return;
   }
 
   // Fallback to old segmentation restore
   const savedData = localStorage.getItem("mySegmentation");
   if (!savedData) {
-    console.warn("No saved segmentation or contours found!");
     return;
   }
-  console.log("Restoring old segmentation data:", JSON.parse(savedData));
 };
 
 // Helper function to wait for OpenCV
@@ -486,10 +651,8 @@ const waitForOpenCV = async () => {
   try {
     // Wait for the imported cv module
     cvReady = await cv;
-    console.log("OpenCV loaded from import");
     return cvReady;
   } catch (error) {
-    console.error("Failed to load OpenCV:", error);
     throw error;
   }
 };
@@ -582,24 +745,20 @@ const findContoursFromSegmentation = async (
 const toSave2 = async () => {
   try {
     const time = new Date().getTime();
-    console.log("Starting toSave2 with OpenCV contour extraction...");
 
     // Wait for OpenCV to be ready
     const cv = await waitForOpenCV();
-    console.log("OpenCV ready", cv);
 
     // Get the segmentation state
     const segmentationState =
       segmentation.state.getSegmentation(segmentationId);
     if (!segmentationState) {
-      console.error("No segmentation found");
       return;
     }
 
     // Get the labelmap volume from cache
     const labelmapVolume = cache.getVolume(segmentationId);
     if (!labelmapVolume || !labelmapVolume.voxelManager) {
-      console.error("Labelmap volume not found");
       return;
     }
 
@@ -644,9 +803,6 @@ const toSave2 = async () => {
     const allSliceContours = [];
     let processedSlices = 0;
 
-    console.log(
-      `Processing volume with dimensions ${width}x${height}x${depth}`
-    );
 
     // Iterate through all slices
     for (let sliceIndex = 0; sliceIndex < depth; sliceIndex++) {
@@ -664,7 +820,6 @@ const toSave2 = async () => {
 
       // Only process slices that have segmentation data
       if (hasSegmentation) {
-        console.log(`Processing slice ${sliceIndex} with segmentation data`);
 
         // Find contours using OpenCV
         const contourResults = await findContoursFromSegmentation(
@@ -684,8 +839,6 @@ const toSave2 = async () => {
       }
     }
 
-    console.log(`Processed ${processedSlices} slices with segmentation`);
-    console.log(`Total slices with contours: ${allSliceContours.length}`);
 
     // Save all slice contours to localStorage
     localStorage.setItem(
@@ -699,15 +852,10 @@ const toSave2 = async () => {
 
     // Log summary
     allSliceContours.forEach((slice) => {
-      console.log(
-        `Slice ${slice.sliceIndex}: ${slice.contours.length} segments with contours`
-      );
     });
 
-    console.log("time get:", new Date().getTime() - time);
     return allSliceContours;
   } catch (error) {
-    console.error("Error in toSave2:", error);
     return [];
   }
 };
@@ -718,14 +866,12 @@ const toSave = async () => {
     const segmentationState =
       segmentation.state.getSegmentation(segmentationId);
     if (!segmentationState) {
-      console.error("No segmentation found");
       return;
     }
 
     // Get the labelmap volume from cache
     const labelmapVolume = cache.getVolume(segmentationId);
     if (!labelmapVolume || !labelmapVolume.voxelManager) {
-      console.error("Labelmap volume not found");
       return;
     }
 
@@ -782,7 +928,6 @@ const toSave = async () => {
     const ctx = canvas.getContext("2d");
 
     if (!ctx) {
-      console.error("Could not get canvas context");
       return;
     }
 
@@ -806,14 +951,10 @@ const toSave = async () => {
     // Export as PNG blob and download
     canvas.toBlob((blob) => {
       if (!blob) {
-        console.error("Failed to create blob");
         return;
       }
 
       const url = URL.createObjectURL(blob);
-      console.log("Segmentation image blob URL:", url);
-      console.log("Blob size:", blob.size, "bytes");
-      console.log("Blob type:", blob.type);
 
       const a = document.createElement("a");
       a.href = url;
@@ -842,9 +983,7 @@ const toSave = async () => {
       })
     );
 
-    console.log("Segmentation saved");
   } catch (error) {
-    console.error("Error saving segmentation:", error);
   }
 };
 
@@ -854,9 +993,8 @@ onMounted(async () => {
   // Initialize OpenCV
   try {
     cvReady = await cv;
-    console.log("OpenCV initialized in onMounted");
   } catch (error) {
-    console.error("Failed to initialize OpenCV:", error);
+    // Failed to initialize OpenCV
   }
 });
 
