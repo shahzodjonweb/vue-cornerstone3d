@@ -9,6 +9,16 @@ const router = createRouter({
       name: "home",
       component: HomeView,
     },
+    {
+      path: "/local",
+      name: "dicom-file-viewer",
+      component: () => import("../components/DicomFileViewer.vue"),
+    },
+    {
+      path: "/test",
+      name: "test",
+      component: () => import("../components/Test.vue"),
+    },
   ],
 });
 

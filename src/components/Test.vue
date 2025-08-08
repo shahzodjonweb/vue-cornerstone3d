@@ -5,6 +5,7 @@
     <button @click="restoreSegmentation" class="restore">
       Restore Segmentation
     </button>
+    
 
     <div class="segment-controls">
       <label>Active Segment: </label>
@@ -94,6 +95,7 @@ import {
   cache,
   metaData,
   geometryLoader,
+  imageLoader,
 } from "@cornerstonejs/core";
 import { init as csCoreInit } from "@cornerstonejs/core";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
@@ -145,6 +147,8 @@ const SeriesInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.226151125820845824875394858561";
 const wadoRsRoot = "https://d14fa38qiwhyfd.cloudfront.net/dicomweb";
 
+
+
 async function createImageIdsAndCacheMetaData() {
   const dicomClient = new api.DICOMwebClient({
     url: wadoRsRoot,
@@ -169,10 +173,10 @@ async function createImageIdsAndCacheMetaData() {
   });
 }
 
-let renderingEngine: RenderingEngine;
-let toolGroup: any;
-let volumeId: string;
-let toolGroupId: string;
+let renderingEngine: RenderingEngine | null = null;
+let toolGroup: any = null;
+let volumeId: string | null = null;
+let toolGroupId: string | null = null;
 let viewportIdAxial = "CT_AXIAL";
 let viewportIdSagittal = "CT_SAGITTAL";
 let viewportIdCoronal = "CT_CORONAL";
@@ -328,6 +332,7 @@ const nextFrame = () => {
   }
 };
 
+
 const setupViewer = async () => {
   if (running.value) return;
   running.value = true;
@@ -344,6 +349,7 @@ const setupViewer = async () => {
   await dicomImageLoaderInit();
   await csToolsInit();
 
+  // Load imageIds from WADO server
   const imageIds = await createImageIdsAndCacheMetaData();
 
   const renderingEngineId = "myRenderingEngine";
@@ -370,18 +376,28 @@ const setupViewer = async () => {
     },
   ]);
 
-  volumeId = "CT_VOLUME_ID";
+  // Generate unique IDs for this session
+  volumeId = `CT_VOLUME_ID_${Date.now()}`;
+  toolGroupId = `CT_TOOLGROUP_${Date.now()}`;
+  
+  // No need to check if volume exists since we're using unique IDs
+  
   const volume = await volumeLoader.createAndCacheVolume(volumeId, {
     imageIds,
   });
-  volumeLoader.registerUnknownVolumeLoader((volumeId) => {
-    const volume = cache.getVolume(volumeId);
-    if (!volume) {
-      throw new Error(`Volume not found in cache: ${volumeId}`);
-    }
-    return Promise.resolve(volume);
-  });
+  
   await volume.load();
+
+  // Remove existing segmentation if it exists
+  if (cache.getVolume(segmentationId)) {
+    cache.removeVolumeLoadObject(segmentationId);
+  }
+  
+  // Remove from segmentation state if exists
+  const existingSegmentation = segmentation.state.getSegmentation(segmentationId);
+  if (existingSegmentation) {
+    segmentation.state.removeSegmentation(segmentationId);
+  }
 
   await volumeLoader.createAndCacheDerivedLabelmapVolume(volumeId, {
     volumeId: segmentationId,
@@ -401,7 +417,7 @@ const setupViewer = async () => {
   addTool(BrushTool);
   addTool(StackScrollTool);
 
-  toolGroupId = "CT_TOOLGROUP";
+  // toolGroupId is already set above with unique timestamp
   toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
 
   // Add both tools to the tool group
@@ -1287,8 +1303,8 @@ onUnmounted(() => {
   if (renderingEngine) {
     renderingEngine.destroy();
   }
-  if (toolGroup) {
-    ToolGroupManager.destroyToolGroup(toolGroup.id);
+  if (toolGroup && toolGroupId) {
+    ToolGroupManager.destroyToolGroup(toolGroupId);
   }
   cache.purgeCache();
   running.value = false;
@@ -1395,6 +1411,7 @@ onUnmounted(() => {
   color: #666;
   padding: 0 5px;
 }
+
 
 /* Frame Controls Styling */
 .frame-controls {
