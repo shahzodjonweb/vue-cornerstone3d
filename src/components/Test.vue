@@ -27,9 +27,18 @@
   </div>
 
   <div class="wrapper">
-    <div ref="elementRefAxial" class="viewport" />
-    <div ref="elementRefSagittal" class="viewport" />
-    <div ref="elementRefCoronal" class="viewport" />
+    <div class="viewport-container">
+      <div ref="elementRefAxial" class="viewport" />
+      <canvas ref="canvasOverlayAxial" class="canvas-overlay" />
+    </div>
+    <div class="viewport-container">
+      <div ref="elementRefSagittal" class="viewport" />
+      <canvas ref="canvasOverlaySagittal" class="canvas-overlay" />
+    </div>
+    <div class="viewport-container">
+      <div ref="elementRefCoronal" class="viewport" />
+      <canvas ref="canvasOverlayCoronal" class="canvas-overlay" />
+    </div>
   </div>
 </template>
 
@@ -77,8 +86,12 @@ let savedContours = ref<any[]>([]);
 const elementRefAxial = ref<HTMLDivElement | null>(null);
 const elementRefSagittal = ref<HTMLDivElement | null>(null);
 const elementRefCoronal = ref<HTMLDivElement | null>(null);
+const canvasOverlayAxial = ref<HTMLCanvasElement | null>(null);
+const canvasOverlaySagittal = ref<HTMLCanvasElement | null>(null);
+const canvasOverlayCoronal = ref<HTMLCanvasElement | null>(null);
 const running = ref(false);
 const activeSegmentIndex = ref(1);
+const currentFrameIndex = ref(0);
 let segmentationId = "MY_SEGMENTATION_ID";
 const StudyInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463";
@@ -227,6 +240,11 @@ const setupViewer = async () => {
   });
 
   renderingEngine.render();
+
+  // Setup frame change listeners for contour rendering
+  setTimeout(() => {
+    setupFrameChangeListener();
+  }, 500);
 };
 
 // Centralized segment color mapping - used for both UI and export
@@ -282,13 +300,180 @@ const getSegmentLabel = (index: number) => {
   return labels[index] || "";
 };
 
-const restoreSegmentation = async () => {
-  const savedData = localStorage.getItem("mySegmentation");
-  if (!savedData) {
-    console.warn("Segmentatsiya topilmadi!");
+// Clear canvas helper
+const clearCanvas = (canvas: HTMLCanvasElement | null) => {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+};
+
+// Draw contours on canvas
+const drawContourOnCanvas = (
+  canvas: HTMLCanvasElement | null,
+  contours: any[],
+  color: string
+) => {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  contours.forEach((contour) => {
+    if (contour.points && contour.points.length > 0) {
+      ctx.beginPath();
+      contour.points.forEach((point: number[], idx: number) => {
+        if (idx === 0) {
+          ctx.moveTo(point[0], point[1]);
+        } else {
+          ctx.lineTo(point[0], point[1]);
+        }
+      });
+      ctx.closePath();
+      ctx.stroke();
+    }
+  });
+};
+
+// Render contours for a specific frame/slice
+const renderContoursForFrame = (
+  frameIndex: number,
+  canvas: HTMLCanvasElement | null
+) => {
+  if (!canvas) return;
+
+  const saved = localStorage.getItem("segmentationContours");
+  if (!saved) {
+    clearCanvas(canvas);
     return;
   }
-  console.log(JSON.parse(savedData));
+
+  const data = JSON.parse(saved);
+
+  // Set canvas dimensions if needed
+  if (
+    canvas.width !== data.dimensions.width ||
+    canvas.height !== data.dimensions.height
+  ) {
+    canvas.width = data.dimensions.width;
+    canvas.height = data.dimensions.height;
+  }
+
+  // Clear existing contours
+  clearCanvas(canvas);
+
+  // Find contours for this specific frame/slice
+  const frameContours = data.sliceContours.find(
+    (slice: any) => slice.frameNumber === frameIndex
+  );
+
+  if (!frameContours) {
+    return; // No contours for this frame
+  }
+
+  // Draw all segments' contours for this frame
+  frameContours.contours.forEach((segment: any) => {
+    drawContourOnCanvas(canvas, segment.contours, segment.color);
+  });
+};
+
+// Setup frame change listener for viewport
+const setupFrameChangeListener = () => {
+  if (!renderingEngine) return;
+
+  try {
+    const viewportAxial = renderingEngine.getViewport(viewportIdAxial);
+    const viewportSagittal = renderingEngine.getViewport(viewportIdSagittal);
+    const viewportCoronal = renderingEngine.getViewport(viewportIdCoronal);
+
+    // Listen for image rendered events
+    const handleImageRendered = (evt: any) => {
+      const viewport = evt.detail.element
+        ? renderingEngine.getViewport(evt.detail.viewportId)
+        : evt.target;
+
+      if (viewport === viewportAxial) {
+        const frameIndex = viewport.getCurrentImageIdIndex
+          ? viewport.getCurrentImageIdIndex()
+          : currentFrameIndex.value;
+        currentFrameIndex.value = frameIndex;
+        renderContoursForFrame(frameIndex, canvasOverlayAxial.value);
+      } else if (viewport === viewportSagittal) {
+        // Handle sagittal view if needed
+        const frameIndex = viewport.getCurrentImageIdIndex
+          ? viewport.getCurrentImageIdIndex()
+          : 0;
+        renderContoursForFrame(frameIndex, canvasOverlaySagittal.value);
+      } else if (viewport === viewportCoronal) {
+        // Handle coronal view if needed
+        const frameIndex = viewport.getCurrentImageIdIndex
+          ? viewport.getCurrentImageIdIndex()
+          : 0;
+        renderContoursForFrame(frameIndex, canvasOverlayCoronal.value);
+      }
+    };
+
+    // Add event listeners
+    if (viewportAxial) {
+      viewportAxial.element.addEventListener(
+        "imagerendered",
+        handleImageRendered
+      );
+    }
+    if (viewportSagittal) {
+      viewportSagittal.element.addEventListener(
+        "imagerendered",
+        handleImageRendered
+      );
+    }
+    if (viewportCoronal) {
+      viewportCoronal.element.addEventListener(
+        "imagerendered",
+        handleImageRendered
+      );
+    }
+
+    console.log("Frame change listeners setup complete");
+  } catch (error) {
+    console.error("Error setting up frame change listeners:", error);
+  }
+};
+
+const restoreSegmentation = async () => {
+  // First check for saved contours (new approach)
+  const savedContours = localStorage.getItem("segmentationContours");
+
+  if (savedContours) {
+    console.log("Restoring contours as frame-specific annotations...");
+    console.log("Saved contours:", JSON.parse(savedContours));
+
+    // Setup frame change listener
+    setupFrameChangeListener();
+    console.log(`Rendering contours for frame ${0}`);
+
+    // Render contours for current frame (start with frame 0)
+    renderContoursForFrame(67, canvasOverlayAxial.value);
+
+    // For other viewports, render their respective frames
+    renderContoursForFrame(0, canvasOverlaySagittal.value);
+    renderContoursForFrame(0, canvasOverlayCoronal.value);
+
+    console.log("Contours restored successfully");
+    return;
+  }
+
+  // Fallback to old segmentation restore
+  const savedData = localStorage.getItem("mySegmentation");
+  if (!savedData) {
+    console.warn("No saved segmentation or contours found!");
+    return;
+  }
+  console.log("Restoring old segmentation data:", JSON.parse(savedData));
 };
 
 // Helper function to wait for OpenCV
@@ -451,53 +636,76 @@ const toSave2 = async () => {
       }
     }
 
-    // Choose which slice to export (middle slice of axial view)
-    const sliceIndex = Math.floor(dimensions[2] / 2);
+    // Process ALL slices that have segmentation data
     const width = dimensions[0];
     const height = dimensions[1];
+    const depth = dimensions[2];
     const sliceSize = width * height;
-    const sliceStart = sliceIndex * sliceSize;
-
-    // Extract slice data
-    const sliceData = new Uint8Array(sliceSize);
-    for (let i = 0; i < sliceSize; i++) {
-      sliceData[i] = scalarData[sliceStart + i] || 0;
-    }
+    const allSliceContours = [];
+    let processedSlices = 0;
 
     console.log(
-      `Processing slice ${sliceIndex} with dimensions ${width}x${height}`
+      `Processing volume with dimensions ${width}x${height}x${depth}`
     );
 
-    // Find contours using OpenCV
-    const contourResults = await findContoursFromSegmentation(
-      sliceData,
-      width,
-      height
-    );
+    // Iterate through all slices
+    for (let sliceIndex = 0; sliceIndex < depth; sliceIndex++) {
+      const sliceStart = sliceIndex * sliceSize;
 
-    console.log("Contours found:", contourResults);
-    console.log(`Total segments with contours: ${contourResults.length}`);
+      // Extract slice data
+      const sliceData = new Uint8Array(sliceSize);
+      let hasSegmentation = false;
 
-    // Save contours to localStorage
+      for (let i = 0; i < sliceSize; i++) {
+        const value = scalarData[sliceStart + i] || 0;
+        sliceData[i] = value;
+        if (value > 0) hasSegmentation = true;
+      }
+
+      // Only process slices that have segmentation data
+      if (hasSegmentation) {
+        console.log(`Processing slice ${sliceIndex} with segmentation data`);
+
+        // Find contours using OpenCV
+        const contourResults = await findContoursFromSegmentation(
+          sliceData,
+          width,
+          height
+        );
+
+        if (contourResults.length > 0) {
+          allSliceContours.push({
+            sliceIndex: sliceIndex,
+            frameNumber: sliceIndex, // For DICOM frame reference
+            contours: contourResults,
+          });
+          processedSlices++;
+        }
+      }
+    }
+
+    console.log(`Processed ${processedSlices} slices with segmentation`);
+    console.log(`Total slices with contours: ${allSliceContours.length}`);
+
+    // Save all slice contours to localStorage
     localStorage.setItem(
       "segmentationContours",
       JSON.stringify({
-        sliceIndex: sliceIndex,
-        width: width,
-        height: height,
-        contours: contourResults,
+        dimensions: { width, height, depth },
+        sliceContours: allSliceContours,
         timestamp: new Date().toISOString(),
       })
     );
 
     // Log summary
-    contourResults.forEach((segment) => {
+    allSliceContours.forEach((slice) => {
       console.log(
-        `Segment ${segment.segmentId} (${segment.label}): ${segment.contours.length} contours found`
+        `Slice ${slice.sliceIndex}: ${slice.contours.length} segments with contours`
       );
     });
+
     console.log("time get:", new Date().getTime() - time);
-    return contourResults;
+    return allSliceContours;
   } catch (error) {
     console.error("Error in toSave2:", error);
     return [];
@@ -677,10 +885,26 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.viewport {
+.viewport-container {
+  position: relative;
   width: 512px;
   height: 512px;
+}
+
+.viewport {
+  width: 100%;
+  height: 100%;
   background-color: black;
+}
+
+.canvas-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
 }
 
 .save,
