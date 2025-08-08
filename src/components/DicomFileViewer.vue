@@ -95,13 +95,14 @@ import {
 } from "@cornerstonejs/core";
 import { init as csCoreInit } from "@cornerstonejs/core";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
-// Import the local DICOM file
-import testDicomUrl from "../assets/test.dcm?url";
+// DICOM file URL
+const DICOM_URL =
+  "https://s3.us-east-2.amazonaws.com/unitlab-storage/private/companies/94aaff6b-a11f-4456-b11c-15661c920b4e/datasources/df7844e73a0046ae9b27304a1166ca31/1e934214441e4c14b9f90c7f0421ce21.dcm?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAXTXE3VALZNOVFWE4%2F20250808%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20250808T133513Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=17f20a8a8ec02a88445b346e9504133791e5a250c14b94846f1f93ded9fd4edf";
 // Import custom multi-frame DICOM loader
-import { 
-  initializeMultiFrameLoader, 
-  storeDicomData, 
-  cleanupMultiFrameLoader 
+import {
+  initializeMultiFrameLoader,
+  storeDicomData,
+  cleanupMultiFrameLoader,
 } from "../utils/multiFrameDicomLoader";
 import {
   init as csToolsInit,
@@ -137,69 +138,74 @@ const maxFrameIndex = computed(() => totalFrames.value - 1);
 const selectedViewport = ref("axial");
 let segmentationId = "MY_SEGMENTATION_ID";
 
-// Function to load local DICOM file
-async function loadLocalDICOM() {
+// Function to load DICOM file from URL
+async function loadDicomFromURL() {
   try {
-    console.log('Loading local DICOM from:', testDicomUrl);
-    
+    console.log("Loading DICOM from URL:", DICOM_URL);
+
     // Fetch the DICOM file
-    const response = await fetch(testDicomUrl);
+    const response = await fetch(DICOM_URL);
     if (!response.ok) {
       throw new Error(`Failed to fetch DICOM file: ${response.status}`);
     }
-    
+
     const arrayBuffer = await response.arrayBuffer();
-    console.log('DICOM file loaded, size:', arrayBuffer.byteLength, 'bytes');
-    
+    console.log(
+      "DICOM file loaded from URL, size:",
+      arrayBuffer.byteLength,
+      "bytes"
+    );
+
     // Import the dicom parser
-    const dicomParser = (await import('dicom-parser')).default;
+    const dicomParser = (await import("dicom-parser")).default;
     const dataSet = dicomParser.parseDicom(new Uint8Array(arrayBuffer));
-    
+
     // Extract metadata
-    const numberOfFrames = parseInt(dataSet.string('x00280008') || '1');
-    const rows = dataSet.uint16('x00280010') || 512;
-    const columns = dataSet.uint16('x00280011') || 512;
-    const pixelSpacing = dataSet.string('x00280030');
-    const sliceThickness = dataSet.floatString('x00180050') || 1;
-    const windowCenter = dataSet.floatString('x00281050') || 40;
-    const windowWidth = dataSet.floatString('x00281051') || 400;
-    const rescaleSlope = dataSet.floatString('x00281053') || 1;
-    const rescaleIntercept = dataSet.floatString('x00281052') || 0;
-    const bitsAllocated = dataSet.uint16('x00280100') || 16;
-    const bitsStored = dataSet.uint16('x00280101') || 16;
-    const highBit = dataSet.uint16('x00280102') || 15;
-    const pixelRepresentation = dataSet.uint16('x00280103') || 0;
-    const photometricInterpretation = dataSet.string('x00280004') || 'MONOCHROME2';
-    const samplesPerPixel = dataSet.uint16('x00280002') || 1;
-    
+    const numberOfFrames = parseInt(dataSet.string("x00280008") || "1");
+    const rows = dataSet.uint16("x00280010") || 512;
+    const columns = dataSet.uint16("x00280011") || 512;
+    const pixelSpacing = dataSet.string("x00280030");
+    const sliceThickness = dataSet.floatString("x00180050") || 1;
+    const windowCenter = dataSet.floatString("x00281050") || 40;
+    const windowWidth = dataSet.floatString("x00281051") || 400;
+    const rescaleSlope = dataSet.floatString("x00281053") || 1;
+    const rescaleIntercept = dataSet.floatString("x00281052") || 0;
+    const bitsAllocated = dataSet.uint16("x00280100") || 16;
+    const bitsStored = dataSet.uint16("x00280101") || 16;
+    const highBit = dataSet.uint16("x00280102") || 15;
+    const pixelRepresentation = dataSet.uint16("x00280103") || 0;
+    const photometricInterpretation =
+      dataSet.string("x00280004") || "MONOCHROME2";
+    const samplesPerPixel = dataSet.uint16("x00280002") || 1;
+
     // Parse pixel spacing
     let pixelSpacingArray = [1, 1];
     if (pixelSpacing) {
-      const parts = pixelSpacing.split('\\');
+      const parts = pixelSpacing.split("\\");
       if (parts.length >= 2) {
         pixelSpacingArray = [parseFloat(parts[0]), parseFloat(parts[1])];
       }
     }
-    
-    console.log('DICOM metadata:', {
+
+    console.log("DICOM metadata:", {
       numberOfFrames,
       rows,
       columns,
       pixelSpacing: pixelSpacingArray,
       sliceThickness,
       windowCenter,
-      windowWidth
+      windowWidth,
     });
-    
+
     // Find the pixel data element
     const pixelDataElement = dataSet.elements.x7fe00010;
     if (!pixelDataElement) {
-      throw new Error('No pixel data found in DICOM file');
+      throw new Error("No pixel data found in DICOM file");
     }
-    
+
     // Generate a unique file ID
     const fileId = `dicom_${Date.now()}`;
-    
+
     // Store the DICOM data for the custom loader
     storeDicomData(fileId, {
       dataSet,
@@ -218,21 +224,21 @@ async function loadLocalDICOM() {
       highBit,
       pixelRepresentation,
       photometricInterpretation,
-      samplesPerPixel
+      samplesPerPixel,
     });
-    
+
     // Create imageIds using our custom scheme
     const imageIds = [];
     for (let frame = 0; frame < numberOfFrames; frame++) {
       const imageId = `multiframe:${fileId}:${frame}`;
       imageIds.push(imageId);
     }
-    
-    console.log('Created imageIds with custom loader:', imageIds);
-    
+
+    console.log("Created imageIds with custom loader:", imageIds);
+
     return imageIds;
   } catch (error) {
-    console.error('Error loading local DICOM file:', error);
+    console.error("Error loading DICOM file from URL:", error);
     throw error;
   }
 }
@@ -410,12 +416,12 @@ const setupViewer = async () => {
   await csCoreInit();
   await dicomImageLoaderInit();
   await csToolsInit();
-  
+
   // Initialize custom multi-frame DICOM loader
   initializeMultiFrameLoader();
 
-  // Load local DICOM file
-  const imageIds = await loadLocalDICOM();
+  // Load DICOM file from URL
+  const imageIds = await loadDicomFromURL();
 
   const renderingEngineId = "myRenderingEngine";
   renderingEngine = new RenderingEngine(renderingEngineId);
@@ -444,20 +450,21 @@ const setupViewer = async () => {
   // Generate unique IDs for this session
   volumeId = `CT_VOLUME_ID_${Date.now()}`;
   toolGroupId = `CT_TOOLGROUP_${Date.now()}`;
-  
+
   const volume = await volumeLoader.createAndCacheVolume(volumeId, {
     imageIds,
   });
-  
+
   await volume.load();
 
   // Remove existing segmentation if it exists
   if (cache.getVolume(segmentationId)) {
     cache.removeVolumeLoadObject(segmentationId);
   }
-  
+
   // Remove from segmentation state if exists
-  const existingSegmentation = segmentation.state.getSegmentation(segmentationId);
+  const existingSegmentation =
+    segmentation.state.getSegmentation(segmentationId);
   if (existingSegmentation) {
     segmentation.state.removeSegmentation(segmentationId);
   }
