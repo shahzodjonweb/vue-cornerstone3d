@@ -6,6 +6,43 @@
       Restore Segmentation
     </button>
     
+    <!-- Drawing Tools -->
+    <div class="drawing-tools">
+      <label>Drawing Tools:</label>
+      <div class="tool-buttons">
+        <button 
+          @click="setActiveTool('Brush')" 
+          :class="['tool-btn', { active: activeTool === 'Brush' }]"
+        >
+          🖌️ Brush
+        </button>
+        <button 
+          @click="setActiveTool('Rectangle')" 
+          :class="['tool-btn', { active: activeTool === 'Rectangle' }]"
+        >
+          📦 BBOX
+        </button>
+        <button 
+          @click="setActiveTool('Polygon')" 
+          :class="['tool-btn', { active: activeTool === 'Polygon' }]"
+        >
+          🔗 Polygon
+        </button>
+      </div>
+    </div>
+
+    <!-- Annotation Controls -->
+    <div class="annotation-controls">
+      <button @click="clearAnnotations" class="clear-btn">
+        🗑️ Clear Annotations
+      </button>
+      <button @click="saveAnnotations" class="save-annotations">
+        💾 Save Annotations
+      </button>
+      <button @click="loadAnnotations" class="load-annotations">
+        📂 Load Annotations
+      </button>
+    </div>
 
     <div class="segment-controls">
       <label>Active Segment: </label>
@@ -106,7 +143,10 @@ import {
   addTool,
   BrushTool,
   StackScrollTool,
+  RectangleROITool,
+  SplineROITool,
   segmentation,
+  annotation,
 } from "@cornerstonejs/tools";
 import { api } from "dicomweb-client";
 import wadors from "@cornerstonejs/dicom-image-loader/wadors";
@@ -140,6 +180,7 @@ const currentFrameIndex = ref(0);
 const totalFrames = ref(1);
 const maxFrameIndex = computed(() => totalFrames.value - 1);
 const selectedViewport = ref("axial");
+const activeTool = ref("Brush");
 let segmentationId = "MY_SEGMENTATION_ID";
 const StudyInstanceUID =
   "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463";
@@ -416,15 +457,19 @@ const setupViewer = async () => {
   // Add tools
   addTool(BrushTool);
   addTool(StackScrollTool);
+  addTool(RectangleROITool);
+  addTool(SplineROITool);  // Using SplineROITool instead of PlanarFreehandROITool for better performance
 
   // toolGroupId is already set above with unique timestamp
   toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
 
-  // Add both tools to the tool group
+  // Add tools to the tool group
   toolGroup.addTool(BrushTool.toolName);
   toolGroup.addTool(StackScrollTool.toolName);
+  toolGroup.addTool(RectangleROITool.toolName);
+  toolGroup.addTool(SplineROITool.toolName);
 
-  // Activate BrushTool for drawing with primary mouse button
+  // Activate BrushTool for drawing with primary mouse button (default)
   toolGroup.setToolActive(BrushTool.toolName, {
     bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
   });
@@ -432,6 +477,46 @@ const setupViewer = async () => {
   // Activate StackScrollTool for frame navigation with mouse wheel
   toolGroup.setToolActive(StackScrollTool.toolName, {
     bindings: [{ mouseButton: csToolsEnums.MouseBindings.Wheel }],
+  });
+
+  // Set annotation tools as passive initially
+  toolGroup.setToolPassive(RectangleROITool.toolName);
+  toolGroup.setToolPassive(SplineROITool.toolName);
+
+  // Configure annotation tools for better performance
+  const annotationRenderingOptions = {
+    renderOutlineOnViewportEntry: true,
+    allowOpenContours: true,
+    preventHandleOutsideImage: false,
+    calculatePointsInsideVolume: false
+  };
+
+  // Apply performance configurations
+  toolGroup.setToolConfiguration(RectangleROITool.toolName, annotationRenderingOptions);
+  
+  // SplineROITool configuration for optimal polygon performance
+  toolGroup.setToolConfiguration(SplineROITool.toolName, {
+    // Basic performance settings
+    renderAnnotationInProgress: true,
+    preventHandleOutsideImage: false,
+    calculatePointsInsideVolume: false,
+    
+    // Spline-specific optimizations
+    resolution: 20,  // Lower resolution for faster rendering
+    showControlPoints: true,  // Show control points for feedback
+    controlPointRadius: 3,  // Small control points
+    lineWidth: 1,  // Thin lines for performance
+    
+    // Disable expensive effects
+    lineDash: [],
+    shadow: false,
+    
+    // Interaction settings
+    grabHandleThreshold: 5,
+    handleRadius: 3,
+    
+    // Skip statistics for performance
+    calculateStats: false
   });
 
   toolGroup.addViewport(viewportIdAxial, renderingEngineId);
@@ -522,7 +607,242 @@ const setupViewer = async () => {
   // Setup frame change listeners for contour rendering
   setTimeout(() => {
     setupFrameChangeListener();
+    setupAnnotationEventListeners();
   }, 500);
+};
+
+// Tool management functions
+const setActiveTool = (toolName: string) => {
+  if (!toolGroup) return;
+
+  // First set all annotation tools to passive
+  toolGroup.setToolPassive(BrushTool.toolName);
+  toolGroup.setToolPassive(RectangleROITool.toolName);
+  toolGroup.setToolPassive(SplineROITool.toolName);
+
+  // Activate the selected tool
+  switch (toolName) {
+    case 'Brush':
+      toolGroup.setToolActive(BrushTool.toolName, {
+        bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
+      });
+      break;
+    case 'Rectangle':
+      toolGroup.setToolActive(RectangleROITool.toolName, {
+        bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
+      });
+      break;
+    case 'Polygon':
+      toolGroup.setToolActive(SplineROITool.toolName, {
+        bindings: [{ mouseButton: csToolsEnums.MouseBindings.Primary }],
+      });
+      // Optimized configuration for SplineROITool
+      toolGroup.setToolConfiguration(SplineROITool.toolName, {
+        renderAnnotationInProgress: true,
+        // Spline-specific settings for fast polygon creation
+        resolution: 10,  // Very low resolution for instant feedback
+        showControlPoints: true,
+        controlPointRadius: 2,
+        lineWidth: 1,
+        // Performance settings
+        calculateStats: false,
+        calculatePointsInsideVolume: false,
+        preventHandleOutsideImage: false,
+        // Disable effects
+        shadow: false,
+        lineDash: []
+      });
+      
+      // Force immediate render after configuration
+      if (renderingEngine) {
+        renderingEngine.render();
+      }
+      break;
+  }
+
+  activeTool.value = toolName;
+  
+  // Force immediate render when switching tools
+  if (renderingEngine) {
+    renderingEngine.render();
+  }
+  
+  // Re-setup event listeners if switching to polygon
+  if (toolName === 'Polygon') {
+    setupAnnotationEventListeners();
+  }
+};
+
+// Annotation management functions
+const clearAnnotations = () => {
+  if (!renderingEngine) return;
+
+  try {
+    // Clear all annotations from all viewports
+    const annotationManager = annotation.state.getAnnotationManager();
+    const annotations = annotationManager.getAllAnnotations();
+    
+    // Remove all annotations
+    annotations.forEach((ann: any) => {
+      annotationManager.removeAnnotation(ann.annotationUID);
+    });
+    
+    // Re-render all viewports
+    renderingEngine.render();
+  } catch (error) {
+    console.error('Error clearing annotations:', error);
+  }
+};
+
+const saveAnnotations = () => {
+  try {
+    const annotationManager = annotation.state.getAnnotationManager();
+    const annotations = annotationManager.getAllAnnotations();
+    
+    const annotationData = {
+      timestamp: new Date().toISOString(),
+      annotations: annotations.map((ann: any) => ({
+        annotationUID: ann.annotationUID,
+        data: ann.data,
+        metadata: ann.metadata,
+        toolName: ann.data?.toolName || 'unknown'
+      }))
+    };
+    
+    localStorage.setItem('savedAnnotations', JSON.stringify(annotationData));
+    alert(`Saved ${annotations.length} annotations`);
+  } catch (error) {
+    console.error('Error saving annotations:', error);
+    alert('Error saving annotations');
+  }
+};
+
+const loadAnnotations = () => {
+  try {
+    const saved = localStorage.getItem('savedAnnotations');
+    if (!saved) {
+      alert('No saved annotations found');
+      return;
+    }
+    
+    const annotationData = JSON.parse(saved);
+    const annotationManager = annotation.state.getAnnotationManager();
+    
+    // Clear existing annotations first
+    clearAnnotations();
+    
+    // Add saved annotations
+    annotationData.annotations.forEach((annData: any) => {
+      // Restore annotation with original data
+      annotationManager.addAnnotation({
+        annotationUID: annData.annotationUID,
+        data: annData.data,
+        metadata: annData.metadata
+      });
+    });
+    
+    // Re-render all viewports
+    if (renderingEngine) {
+      renderingEngine.render();
+    }
+    
+    alert(`Loaded ${annotationData.annotations.length} annotations`);
+  } catch (error) {
+    console.error('Error loading annotations:', error);
+    alert('Error loading annotations');
+  }
+};
+
+// Performance optimization: Throttle rendering updates
+const throttle = (func: Function, limit: number) => {
+  let inThrottle: boolean;
+  return function(this: any, ...args: any[]) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  }
+};
+
+// Throttled render function for better performance during annotation creation
+const throttledRender = throttle(() => {
+  if (renderingEngine) {
+    renderingEngine.render();
+  }
+}, 16); // ~60fps
+
+// Setup annotation event listeners for performance optimization
+const setupAnnotationEventListeners = () => {
+  if (!renderingEngine) return;
+
+  try {
+    // Listen for annotation events on all viewports
+    [viewportIdAxial, viewportIdSagittal, viewportIdCoronal].forEach(viewportId => {
+      const viewport = renderingEngine!.getViewport(viewportId);
+      if (viewport && viewport.element) {
+        // Annotation completed - full render
+        viewport.element.addEventListener('ANNOTATION_COMPLETED', () => {
+          if (renderingEngine) renderingEngine.render();
+        });
+
+        // Annotation modified - immediate render for polygon tool
+        viewport.element.addEventListener('ANNOTATION_MODIFIED', (evt: any) => {
+          // Check if polygon tool is active for immediate rendering
+          if (activeTool.value === 'Polygon') {
+            if (renderingEngine) renderingEngine.render();
+          } else {
+            throttledRender();
+          }
+        });
+
+        // Annotation selection - immediate render
+        viewport.element.addEventListener('ANNOTATION_SELECTION_CHANGE', () => {
+          if (renderingEngine) renderingEngine.render();
+        });
+
+        // Add mouse events for polygon tool immediate feedback
+        viewport.element.addEventListener('mousedown', () => {
+          if (activeTool.value === 'Polygon' && renderingEngine) {
+            requestAnimationFrame(() => renderingEngine!.render());
+          }
+        });
+        
+        viewport.element.addEventListener('mousemove', () => {
+          if (activeTool.value === 'Polygon' && renderingEngine) {
+            requestAnimationFrame(() => renderingEngine!.render());
+          }
+        });
+        
+        // Add click event for polygon point addition
+        viewport.element.addEventListener('click', () => {
+          if (activeTool.value === 'Polygon' && renderingEngine) {
+            // Immediate render on each polygon point
+            renderingEngine.render();
+            // Force synchronous render for this viewport
+            viewport.render();
+          }
+        });
+        
+        // Add pointer events for even more responsive polygon drawing
+        viewport.element.addEventListener('pointerdown', (evt: PointerEvent) => {
+          if (activeTool.value === 'Polygon' && renderingEngine) {
+            // Direct viewport render without going through rendering engine
+            viewport.render();
+          }
+        });
+        
+        viewport.element.addEventListener('pointermove', (evt: PointerEvent) => {
+          if (activeTool.value === 'Polygon' && renderingEngine) {
+            // Use direct viewport render for faster updates
+            viewport.render();
+          }
+        });
+      }
+    });
+  } catch (error) {
+    console.error('Error setting up annotation event listeners:', error);
+  }
 };
 
 // Centralized segment color mapping - used for both UI and export
@@ -1544,5 +1864,96 @@ onUnmounted(() => {
   outline: none;
   border-color: #4caf50;
   box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+}
+
+/* Drawing Tools Styling */
+.drawing-tools {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 15px;
+  padding: 10px;
+  background-color: white;
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.drawing-tools label {
+  font-weight: bold;
+  color: #333;
+  font-size: 14px;
+}
+
+.tool-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.tool-btn {
+  padding: 8px 12px;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  background-color: #f9f9f9;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tool-btn:hover {
+  border-color: #4caf50;
+  background-color: #f0f8f0;
+}
+
+.tool-btn.active {
+  border-color: #4caf50;
+  background-color: #e8f5e8;
+  font-weight: bold;
+  color: #2e7d32;
+}
+
+/* Annotation Controls Styling */
+.annotation-controls {
+  display: inline-flex;
+  gap: 8px;
+  margin: 0 15px;
+  padding: 10px;
+  background-color: #fff3e0;
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.clear-btn {
+  padding: 8px 12px;
+  border: 2px solid #f44336;
+  border-radius: 6px;
+  background-color: #ffebee;
+  color: #c62828;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+.clear-btn:hover {
+  background-color: #f44336;
+  color: white;
+}
+
+.save-annotations, .load-annotations {
+  padding: 8px 12px;
+  border: 2px solid #2196f3;
+  border-radius: 6px;
+  background-color: #e3f2fd;
+  color: #1565c0;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+.save-annotations:hover, .load-annotations:hover {
+  background-color: #2196f3;
+  color: white;
 }
 </style>

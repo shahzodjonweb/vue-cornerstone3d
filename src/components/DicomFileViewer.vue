@@ -97,7 +97,7 @@ import { init as csCoreInit } from "@cornerstonejs/core";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 // DICOM file URL
 const DICOM_URL =
-  "https://s3.us-east-2.amazonaws.com/unitlab-storage/private/companies/94aaff6b-a11f-4456-b11c-15661c920b4e/datasources/df7844e73a0046ae9b27304a1166ca31/1e934214441e4c14b9f90c7f0421ce21.dcm?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAXTXE3VALZNOVFWE4%2F20250808%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20250808T133513Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=17f20a8a8ec02a88445b346e9504133791e5a250c14b94846f1f93ded9fd4edf";
+  "https://s3.us-east-2.amazonaws.com/unitlab-storage/private/companies/94aaff6b-a11f-4456-b11c-15661c920b4e/datasources/971153f657684f0f9a324a1b48e08e20/e1ec7f4cd5f04d508918bcf8e6653e12.dcm?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAXTXE3VALZNOVFWE4%2F20250811%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20250811T065207Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=8f8525c795dbcbdc211b1cac03af271a1307cca804fe682a6c76e95496abcad1";
 
 // Debug flag to test with standard DICOM loader instead of custom
 const USE_STANDARD_LOADER = false;
