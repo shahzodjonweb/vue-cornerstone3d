@@ -144,8 +144,6 @@ let segmentationId = "MY_SEGMENTATION_ID";
 // Function to load DICOM file from URL
 async function loadDicomFromURL() {
   try {
-    console.log("Loading DICOM from URL:", DICOM_URL);
-
     // Fetch the DICOM file
     const response = await fetch(DICOM_URL);
     if (!response.ok) {
@@ -153,11 +151,6 @@ async function loadDicomFromURL() {
     }
 
     const arrayBuffer = await response.arrayBuffer();
-    console.log(
-      "DICOM file loaded from URL, size:",
-      arrayBuffer.byteLength,
-      "bytes"
-    );
 
     // Import the dicom parser
     const dicomParser = (await import("dicom-parser")).default;
@@ -171,21 +164,23 @@ async function loadDicomFromURL() {
     const sliceThickness = dataSet.floatString("x00180050") || 1;
     const rescaleSlope = dataSet.floatString("x00281053") || 1;
     const rescaleIntercept = dataSet.floatString("x00281052") || 0;
-    
+
     // Extract windowing values - handle multiple values if present
     let windowCenter, windowWidth;
     const windowCenterStr = dataSet.string("x00281050");
     const windowWidthStr = dataSet.string("x00281051");
-    
+
     if (windowCenterStr && windowWidthStr) {
       // Handle multiple window center/width values (separated by backslashes)
-      const centerValues = windowCenterStr.split("\\").map(v => parseFloat(v));
-      const widthValues = windowWidthStr.split("\\").map(v => parseFloat(v));
-      
+      const centerValues = windowCenterStr
+        .split("\\")
+        .map((v) => parseFloat(v));
+      const widthValues = windowWidthStr.split("\\").map((v) => parseFloat(v));
+
       // Use the first valid pair, or find the best one for soft tissue
       windowCenter = centerValues[0] || 40;
       windowWidth = widthValues[0] || 400;
-      
+
       // If multiple presets, try to find a good soft tissue window
       for (let i = 0; i < centerValues.length && i < widthValues.length; i++) {
         const center = centerValues[i];
@@ -219,20 +214,6 @@ async function loadDicomFromURL() {
       }
     }
 
-    console.log("DICOM metadata:", {
-      numberOfFrames,
-      rows,
-      columns,
-      pixelSpacing: pixelSpacingArray,
-      sliceThickness,
-      originalWindowCenter: windowCenter,
-      originalWindowWidth: windowWidth,
-      rescaleSlope,
-      rescaleIntercept,
-      bitsAllocated,
-      pixelRepresentation
-    });
-
     // Find the pixel data element
     const pixelDataElement = dataSet.elements.x7fe00010;
     if (!pixelDataElement) {
@@ -245,10 +226,8 @@ async function loadDicomFromURL() {
     // Calculate automatic windowing if not present in DICOM
     let finalWindowCenter: number = windowCenter || 40;
     let finalWindowWidth: number = windowWidth || 400;
-    
+
     if (windowCenter === null || windowWidth === null) {
-      console.log("No windowing found in DICOM, using reasonable defaults for 16-bit medical imaging...");
-      
       // For 16-bit medical images without windowing, use reasonable defaults
       // Based on the actual pixel values we're seeing (0-1500 range)
       if (bitsAllocated === 16) {
@@ -261,10 +240,7 @@ async function loadDicomFromURL() {
         finalWindowCenter = 128;
         finalWindowWidth = 256;
       }
-      
-      console.log(`Using default windowing for ${bitsAllocated}-bit image: Center=${finalWindowCenter}, Width=${finalWindowWidth}`);
     } else {
-      console.log(`Using DICOM windowing: Center=${finalWindowCenter}, Width=${finalWindowWidth}`);
     }
 
     // Store the DICOM data for the custom loader
@@ -295,11 +271,8 @@ async function loadDicomFromURL() {
       imageIds.push(imageId);
     }
 
-    console.log("Created imageIds with custom loader:", imageIds);
-
     return imageIds;
   } catch (error) {
-    console.error("Error loading DICOM file from URL:", error);
     throw error;
   }
 }
@@ -485,7 +458,6 @@ const setupViewer = async () => {
   let imageIds;
   if (USE_STANDARD_LOADER) {
     // Test with standard DICOM loader for comparison
-    console.log("Using standard DICOM loader for testing");
     imageIds = [`wadouri:${DICOM_URL}`];
   } else {
     imageIds = await loadDicomFromURL();

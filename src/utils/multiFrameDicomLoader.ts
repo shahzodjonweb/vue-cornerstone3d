@@ -59,19 +59,6 @@ function extractFramePixelData(
   // Calculate frame offset
   const frameOffset = offset + (frameIndex * frameSize);
   
-  // Debug logging for frame extraction
-  console.log(`Extracting frame ${frameIndex}:`, {
-    frameSize,
-    bytesPerPixel,
-    offset,
-    frameOffset,
-    totalPixelDataLength: pixelData.length,
-    extractionEnd: frameOffset + frameSize,
-    firstFewBytes: Array.from(pixelData.slice(frameOffset, frameOffset + 10)),
-    rows,
-    columns,
-    expectedPixels: rows * columns
-  });
   
   // Extract frame data
   const frameData = new Uint8Array(frameSize);
@@ -79,7 +66,7 @@ function extractFramePixelData(
     if (frameOffset + i < pixelData.length) {
       frameData[i] = pixelData[frameOffset + i];
     } else {
-      console.warn(`Pixel data truncated at index ${frameOffset + i}, total length: ${pixelData.length}`);
+      // Pixel data truncated
       break;
     }
   }
@@ -174,16 +161,6 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         throw new Error(`Unsupported bits allocated: ${bitsAllocated}`);
       }
       
-      // Debug logging - sample some pixel values
-      console.log(`Frame ${frameIndex} pixel data info:`, {
-        totalPixels: pixelDataTypedArray.length,
-        expectedPixels: rows * columns,
-        bitsAllocated,
-        pixelRepresentation,
-        arrayType: pixelDataTypedArray.constructor.name,
-        firstTenPixels: Array.from(pixelDataTypedArray.slice(0, 10)),
-        lastTenPixels: Array.from(pixelDataTypedArray.slice(-10))
-      });
       
       // Calculate min and max pixel values
       let minPixelValue = Number.MAX_VALUE;
@@ -195,16 +172,6 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         if (value > maxPixelValue) maxPixelValue = value;
       }
       
-      console.log(`Frame ${frameIndex} pixel value range:`, {
-        minPixelValue,
-        maxPixelValue,
-        rescaleSlope,
-        rescaleIntercept,
-        windowCenter,
-        windowWidth,
-        minAfterRescale: minPixelValue * rescaleSlope + rescaleIntercept,
-        maxAfterRescale: maxPixelValue * rescaleSlope + rescaleIntercept
-      });
       
       // Determine if image is color
       const isColor = photometricInterpretation === 'RGB' || samplesPerPixel > 1;
@@ -228,11 +195,6 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         finalWindowCenter = (rescaledMin + rescaledMax) / 2;
         finalWindowWidth = rescaledRange * 1.2; // Add some padding
         
-        console.warn(`Windowing values seemed extreme, recalculated:`, {
-          original: { center: windowCenter, width: windowWidth },
-          recalculated: { center: finalWindowCenter, width: finalWindowWidth },
-          pixelRange: { min: rescaledMin, max: rescaledMax, range: rescaledRange }
-        });
       }
       
       // Create the image object
@@ -257,19 +219,12 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         sliceThickness,
         invert: photometricInterpretation === 'MONOCHROME1',
         sizeInBytes: pixelDataTypedArray.byteLength,
-        getPixelData: () => {
-          // Add validation logging for pixel data access
-          console.log(`getPixelData called for frame ${frameIndex}:`, {
-            arrayType: pixelDataTypedArray.constructor.name,
-            length: pixelDataTypedArray.length,
-            firstPixels: Array.from(pixelDataTypedArray.slice(0, 5)),
-            someMiddlePixels: Array.from(pixelDataTypedArray.slice(Math.floor(pixelDataTypedArray.length/2), Math.floor(pixelDataTypedArray.length/2) + 5))
-          });
-          return pixelDataTypedArray;
-        },
+        getPixelData: () => pixelDataTypedArray,
         getCanvas: undefined as any, // Optional, not needed for basic functionality
         decodeTimeInMS: 0,
         loadTimeInMS: 0,
+        numberOfComponents: samplesPerPixel,
+        dataType: bitsAllocated === 8 ? 'Uint8Array' : 'Uint16Array',
         
         // Additional properties that might be needed
         // data: undefined, // Not part of IImage interface
@@ -278,26 +233,16 @@ function multiFrameDicomImageLoader(imageId: string): Types.IImageLoadObject {
         // isPreScaled: false, // Not part of IImage interface
         
         // Frame-specific metadata
-        frameNumber: frameIndex,
-        instanceNumber: frameIndex + 1,
-        imagePositionPatient: [0, 0, frameIndex * sliceThickness],
-        imageOrientationPatient: [1, 0, 0, 0, 1, 0],
+        // frameNumber: frameIndex, // Not part of IImage interface
+        // instanceNumber: frameIndex + 1, // Not part of IImage interface
+        // imagePositionPatient: [0, 0, frameIndex * sliceThickness], // Not part of IImage interface
+        // imageOrientationPatient: [1, 0, 0, 0, 1, 0], // Not part of IImage interface
         
         // Reference to original data
         cachedLut: undefined,
         voiLUTFunction: 'LINEAR' as any,
       };
       
-      console.log(`Final image object for frame ${frameIndex}:`, {
-        windowCenter: image.windowCenter,
-        windowWidth: image.windowWidth,
-        minPixelValue: image.minPixelValue,
-        maxPixelValue: image.maxPixelValue,
-        slope: image.slope,
-        intercept: image.intercept,
-        photometricInterpretation,
-        invert: image.invert
-      });
       
       resolve(image);
     } catch (error) {
@@ -407,7 +352,6 @@ export function initializeMultiFrameLoader() {
   // Register the metadata provider with high priority
   metaData.addProvider(multiFrameMetadataProvider, 10000);
   
-  console.log('Multi-frame DICOM loader initialized');
 }
 
 // Clean up function
